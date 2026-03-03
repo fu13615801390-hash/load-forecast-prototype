@@ -22,7 +22,7 @@ HISTORICAL_LOAD_CSV = os.getenv("HISTORICAL_LOAD_CSV", "data/historical_load.csv
 USE_PRED_HISTORY_BASELINE_FALLBACK = os.getenv("USE_PRED_HISTORY_BASELINE_FALLBACK", "false").lower() == "true"
 RESIDENTIAL_BASELINE_CSV = os.getenv(
     "RESIDENTIAL_BASELINE_CSV",
-    r"c:\Users\14184\Downloads\BV06 - Residential Energy Consumption Data (2020-2024) - Jan. 2020.csv",
+    r"c:\Users\14184\Downloads\BV06 - Residential Energy Consumption Data (2020-2024) - Jan. 2020 (1).csv",
 )
 LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
 
