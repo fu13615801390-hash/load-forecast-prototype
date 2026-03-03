@@ -301,13 +301,6 @@
         </div>
       </div>
 
-      <div class="row2">
-        <div>
-          <label>Start time</label>
-          <input id="start" type="datetime-local" />
-        </div>
-      </div>
-
       <!-- Train Your Own Model -->
       <div id="trainBox" class="hidden">
         <div class="sectionTitle">Train your own model</div>
@@ -508,25 +501,9 @@
     });
   }
 
-  function normalizeStartValue(raw){
-    if(!raw) return null;
-    let s = String(raw).trim();
-    // Accept either "YYYY-MM-DDTHH:mm" or "YYYY-MM-DD HH:mm"
-    if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) return s;
-    const m = s.match(/(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})/);
-    if(m){
-      const hhmm = m[2].length === 4 ? `0${m[2]}` : m[2];
-      return `${m[1]}T${hhmm}`;
-    }
-    return null;
-  }
-
   function getCommon(){
-    const rawStart = document.getElementById("start").value;
-    const startIso = normalizeStartValue(rawStart);
     return {
-      start_iso: startIso,
-      raw_start: rawStart,
+      start_iso: null,
       horizon_hours: 24
     };
   }
@@ -611,11 +588,6 @@
   async function run(){
     const mode = document.getElementById("model").value;
     const common = getCommon();
-
-    if(common.raw_start && !common.start_iso){
-      setStatus("Invalid Start time format. Use the picker and ensure date+hour are fully selected.", "err");
-      return;
-    }
 
     if(mode === "train"){
       setStatus("Train mode selected. Use the Train Model button.", "ok");
