@@ -620,6 +620,23 @@
         loc: data.filename || "No file",
         coords: hasMetrics ? `RMSE ${m.rmse}` : `${rows} rows`
       });
+      if(data.validation && Array.isArray(data.validation.timestamps)){
+        const v = data.validation;
+        plotISOTime("chartSingle", v.timestamps, [
+          { label: "Validation actual", data: v.actual || [] },
+          { label: "Validation predicted", data: v.predicted || [] }
+        ], 8, data.unit || "kWh");
+
+        const vRows = (v.timestamps || []).map((t, idx) => ([
+          String(t).replace("T", " "),
+          (v.actual || [])[idx] ?? "",
+          (v.predicted || [])[idx] ?? ""
+        ]));
+        document.getElementById("tableSingle").innerHTML = toTableHTML(
+          ["Time", `Actual${data.unit ? ` (${data.unit})` : ""}`, `Predicted${data.unit ? ` (${data.unit})` : ""}`],
+          vRows
+        );
+      }
     } catch(e){
       setStatus("Train failed: " + e.message, "err");
     }
@@ -713,10 +730,11 @@
       } else {
         const hasBaseline = Array.isArray(data.historical_baseline) && data.historical_baseline.some(v => v != null && !Number.isNaN(Number(v)));
         const src = data.baseline_source || "none";
+        const modelSrc = data.model_source ? ` Model source: ${data.model_source}.` : "";
         if(hasBaseline){
-          setStatus(`Success. Baseline source: ${src}.`, "ok");
+          setStatus(`Success.${modelSrc} Baseline source: ${src}.`, "ok");
         } else {
-          setStatus(`Success, but no historical baseline found (source: ${src}).`, "err");
+          setStatus(`Success, but no historical baseline found (source: ${src}).${modelSrc}`, "err");
         }
       }
     } catch(e){

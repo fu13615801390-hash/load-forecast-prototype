@@ -27,6 +27,7 @@ RESIDENTIAL_BASELINE_CSV = os.getenv(
     r"c:\Users\14184\Downloads\BV06 - Residential Energy Consumption Data (2020-2024) - Jan. 2020 (1).csv",
 )
 LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
+TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "user_res_model.joblib")
 
 
 @app.get("/")
@@ -398,6 +399,66 @@ def _historical_baseline_from_residential_csv(target_timestamps: list[str]) -> l
     return [round(float(v), 2) if not pd.isna(v) else None for v in baseline]  # type: ignore[list-item]
 
 
+def _load_residential_history_df() -> pd.DataFrame | None:
+    """
+    Load historical residential series as [dt, load] for lag-feature forecasting.
+    """
+    candidate_paths: list[str] = []
+    env_candidates = (os.getenv("RESIDENTIAL_BASELINE_CSVS") or "").strip()
+    if env_candidates:
+        candidate_paths.extend([p.strip() for p in env_candidates.split(";") if p.strip()])
+    candidate_paths.append(RESIDENTIAL_BASELINE_CSV)
+
+    csv_path = next((p for p in candidate_paths if p and os.path.isfile(p)), None)
+    if not csv_path:
+        return None
+
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        return None
+
+    date_col = _find_first_col(df, ["Date", "date"])
+    hour_col = _find_first_col(df, ["Hour", "hour", "hour_ending", "he"])
+    load_col = _find_first_col(
+        df,
+        [
+            "Total Consumption (kWh)",
+            "total_consumption_kwh",
+            "consumption_kwh",
+            "load",
+            "demand",
+            "kwh",
+            "kw",
+        ],
+    )
+    if date_col is None or hour_col is None or load_col is None:
+        return None
+
+    temp = df.copy()
+    type_col = _find_first_col(temp, ["Type", "type", "Sector", "sector"])
+    if type_col is not None:
+        temp = temp[temp[type_col].astype(str).str.lower() == "residential"]
+    if temp.empty:
+        return None
+
+    temp[hour_col] = pd.to_numeric(temp[hour_col], errors="coerce")
+    temp[load_col] = pd.to_numeric(temp[load_col], errors="coerce")
+    temp["dt"] = pd.to_datetime(
+        temp[date_col].astype(str) + " " + (temp[hour_col].astype("Int64") - 1).astype(str) + ":00",
+        errors="coerce",
+    )
+    temp = temp.dropna(subset=["dt", load_col]).sort_values("dt")
+    if temp.empty:
+        return None
+
+    out = temp[["dt", load_col]].copy()
+    out.columns = ["dt", "load"]
+    out["load"] = pd.to_numeric(out["load"], errors="coerce")
+    out = out.dropna(subset=["load"]).reset_index(drop=True)
+    return out if not out.empty else None
+
+
 # ----------------------------
 # ML support: build 168h past window (for LSTM)
 # ----------------------------
@@ -532,6 +593,81 @@ def _build_train_dataframe(df: pd.DataFrame):
     return work, X, y, feature_cols, target_col
 
 
+def _predict_residential_with_user_model(start: datetime, horizon_hours: int, label: str, lat: float, lon: float) -> list[float]:
+    """
+    Forecast residential load using trained user model (if available).
+    Uses recursive lag features from historical + predicted values.
+    """
+    if not os.path.isfile(TRAINED_USER_MODEL_PATH):
+        raise FileNotFoundError(f"Trained user model not found at {TRAINED_USER_MODEL_PATH}")
+
+    payload = joblib.load(TRAINED_USER_MODEL_PATH)
+    model = payload.get("model")
+    feature_cols = payload.get("feature_cols")
+    if model is None or not feature_cols:
+        raise ValueError("Invalid trained user model artifact.")
+
+    hist = _load_residential_history_df()
+    if hist is None or hist.empty:
+        raise ValueError("Residential historical series unavailable for lag features.")
+
+    hist = hist.sort_values("dt").reset_index(drop=True)
+    dt_to_load = {pd.Timestamp(r["dt"]): float(r["load"]) for _, r in hist.iterrows()}
+    last_known = float(hist["load"].iloc[-1])
+    fallback_24h = float(hist["load"].tail(24).mean()) if len(hist) >= 24 else last_known
+
+    w = mock_weather(label, lat, lon, start, horizon_hours)
+    temps = [float(v) for v in w["temperature_C"]]
+    hums = [float(v) for v in w["relative_humidity_pct"]]
+
+    preds: list[float] = []
+    for i in range(horizon_hours):
+        dt = pd.Timestamp(start + timedelta(hours=i + 1))
+        lag1 = dt_to_load.get(dt - pd.Timedelta(hours=1), last_known if preds else last_known)
+        lag24 = dt_to_load.get(dt - pd.Timedelta(hours=24), fallback_24h)
+
+        row = {
+            "hour_sin": math.sin(2 * math.pi * (dt.hour / 24.0)),
+            "hour_cos": math.cos(2 * math.pi * (dt.hour / 24.0)),
+            "dow": float(dt.dayofweek),
+            "month": float(dt.month),
+            "is_weekend": 1.0 if dt.dayofweek in (5, 6) else 0.0,
+            "lag_1h": float(lag1),
+            "lag_24h": float(lag24),
+        }
+
+        temp_val = temps[i] if i < len(temps) else temps[-1]
+        hum_val = hums[i] if i < len(hums) else hums[-1]
+        hdd_val = max(0.0, 18.0 - float(temp_val))
+
+        if "temperature_C" in feature_cols:
+            row["temperature_C"] = temp_val
+        if "temp_c" in feature_cols:
+            row["temp_c"] = temp_val
+        if "temp" in feature_cols:
+            row["temp"] = temp_val
+        if "temperature" in feature_cols:
+            row["temperature"] = temp_val
+        if "relative_humidity_pct" in feature_cols:
+            row["relative_humidity_pct"] = hum_val
+        if "humidity_percent" in feature_cols:
+            row["humidity_percent"] = hum_val
+        if "humidity" in feature_cols:
+            row["humidity"] = hum_val
+        if "rh" in feature_cols:
+            row["rh"] = hum_val
+        if "hdd" in feature_cols:
+            row["hdd"] = hdd_val
+
+        x = pd.DataFrame([[row.get(c, 0.0) for c in feature_cols]], columns=feature_cols)
+        yhat = float(model.predict(x)[0])
+        preds.append(yhat)
+        dt_to_load[dt] = yhat
+        last_known = yhat
+
+    return preds
+
+
 # ----------------------------
 # Debug endpoints (VERY useful on Azure)
 # ----------------------------
@@ -586,11 +722,14 @@ def api_forecast_res(req: ModelRequest):
     start = _parse_start(req.start_iso)
     label, lat, lon = resolve_preset(req.location_key)
 
-    # Build 168h history window
-    window_rows = build_past_168_window(label, lat, lon, start)
-
-    # ML predict 24h
-    yhat = _ml_predict_residential_24h(window_rows)
+    # Prefer trained user model if available; fallback to original LSTM path.
+    model_source = "user_trained_rf"
+    try:
+        yhat = _predict_residential_with_user_model(start, 24, label, lat, lon)
+    except Exception:
+        window_rows = build_past_168_window(label, lat, lon, start)
+        yhat = _ml_predict_residential_24h(window_rows)
+        model_source = "default_res_lstm"
 
     # Build next 24 hourly timestamps
     ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(24)]
@@ -607,6 +746,7 @@ def api_forecast_res(req: ModelRequest):
         "historical_baseline": _historical_baseline_from_residential_csv(ts),
         "baseline_source": "residential_csv",
         "baseline_source_path": LAST_RESIDENTIAL_BASELINE_PATH,
+        "model_source": model_source,
     }
     if out["historical_baseline"] is None:
         out["historical_baseline"] = _historical_baseline_from_actual_csv(req.location_key, "res", ts)
@@ -691,8 +831,13 @@ def api_run_all(req: AllRequest):
 
     # ---- Residential (ML 24h) ----
     res_label, res_lat, res_lon = resolve_preset(req.res_location_key)
-    res_window = build_past_168_window(res_label, res_lat, res_lon, start)
-    res_yhat = _ml_predict_residential_24h(res_window)
+    res_model_source = "user_trained_rf"
+    try:
+        res_yhat = _predict_residential_with_user_model(start, 24, res_label, res_lat, res_lon)
+    except Exception:
+        res_window = build_past_168_window(res_label, res_lat, res_lon, start)
+        res_yhat = _ml_predict_residential_24h(res_window)
+        res_model_source = "default_res_lstm"
     res_ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(24)]
 
     res_out = {
@@ -704,6 +849,7 @@ def api_run_all(req: AllRequest):
         "historical_baseline": _historical_baseline_from_residential_csv(res_ts),
         "baseline_source": "residential_csv",
         "baseline_source_path": LAST_RESIDENTIAL_BASELINE_PATH,
+        "model_source": res_model_source,
     }
     if res_out["historical_baseline"] is None:
         res_out["historical_baseline"] = _historical_baseline_from_actual_csv(req.res_location_key, "res", res_ts)
@@ -852,5 +998,11 @@ async def api_train(file: UploadFile | None = File(default=None), notes: str | N
             "r2": round(r2, 4),
         },
         "model_path": model_path,
+        "unit": "kWh",
+        "validation": {
+            "timestamps": [d.isoformat(timespec="minutes") for d in work["dt"].iloc[split_idx:].tolist()],
+            "actual": [round(float(v), 4) for v in y_val.tolist()],
+            "predicted": [round(float(v), 4) for v in pred.tolist()],
+        },
         "notes": notes_text,
     }
