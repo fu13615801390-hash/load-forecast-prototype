@@ -1254,6 +1254,8 @@ def api_run_all(req: AllRequest):
 async def api_train(
     file: UploadFile | None = File(default=None),
     weather_file: UploadFile | None = File(default=None),
+    expect_rows: int | None = Form(default=None),
+    auto_trim_to_expected: bool = Form(default=True),
     notes: str | None = Form(default=None),
 ):
     """
@@ -1334,6 +1336,25 @@ async def api_train(
             "weather_matched_rows": matched,
         }
 
+    input_rows = int(len(df))
+    expected = int(expect_rows) if expect_rows is not None else None
+    if expected is not None and input_rows != expected:
+        if auto_trim_to_expected and input_rows > expected:
+            try:
+                temp_for_trim = _with_datetime_column(df, "__dt").sort_values("__dt").reset_index(drop=True)
+                df = temp_for_trim.tail(expected).drop(columns=["__dt"], errors="ignore").reset_index(drop=True)
+                input_rows = int(len(df))
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unable to auto-trim training CSV to {expected} rows: {e}",
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Training CSV must contain exactly {expected} rows after merge/cleaning. Found {input_rows}.",
+            )
+
     try:
         from sklearn.ensemble import RandomForestRegressor
         from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -1384,6 +1405,7 @@ async def api_train(
         "message": "Training completed.",
         "trained": True,
         "filename": file.filename,
+        "input_rows": input_rows,
         "rows": int(len(work)),
         "columns": [str(c) for c in df.columns],
         "feature_columns": [str(c) for c in feature_cols],
