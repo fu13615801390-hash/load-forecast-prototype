@@ -322,6 +322,10 @@
             <input id="trainDataFile" type="file" accept=".csv" />
           </div>
           <div>
+            <label>Weather CSV for training (optional)</label>
+            <input id="trainWeatherFile" type="file" accept=".csv" />
+          </div>
+          <div>
             <label>Notes / Parameters (optional)</label>
             <textarea id="trainNotes" placeholder="Describe features, model type, etc..."></textarea>
           </div>
@@ -559,11 +563,15 @@
   // --------------------
   async function trainModel(){
     const fileInput = document.getElementById("trainDataFile");
+    const weatherFileInput = document.getElementById("trainWeatherFile");
     const notes = document.getElementById("trainNotes").value || "";
 
     const fd = new FormData();
     if(fileInput.files && fileInput.files.length > 0){
       fd.append("file", fileInput.files[0]);
+    }
+    if(weatherFileInput.files && weatherFileInput.files.length > 0){
+      fd.append("weather_file", weatherFileInput.files[0]);
     }
     fd.append("notes", notes);
 
@@ -578,7 +586,9 @@
       const m = data.metrics || {};
       const hasMetrics = m.mae != null && m.rmse != null;
       const metricText = hasMetrics ? ` MAE=${m.mae}, RMSE=${m.rmse}, R2=${m.r2}` : "";
-      setStatus((data.message || `Train request accepted (${rows} rows, ${cols} columns).`) + metricText, "ok");
+      const merge = data.weather_merge;
+      const mergeText = merge ? ` Weather match: ${merge.weather_matched_rows}/${merge.merged_rows}.` : "";
+      setStatus((data.message || `Train request accepted (${rows} rows, ${cols} columns).`) + metricText + mergeText, "ok");
       setChips({
         out: data.module || "train_res_model",
         loc: data.filename || "No file",

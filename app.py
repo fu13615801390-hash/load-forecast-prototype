@@ -296,6 +296,46 @@ def _parse_uploaded_weather_csv(content: bytes) -> dict:
     }
 
 
+def _with_datetime_column(df: pd.DataFrame, col_name: str = "__dt") -> pd.DataFrame:
+    """
+    Build a datetime column from either timestamp OR Date+Hour fields.
+    """
+    ts_col = _find_first_col(df, ["timestamp", "datetime", "dt", "time"])
+    date_col = _find_first_col(df, ["Date", "date"])
+    hour_col = _find_first_col(df, ["Hour", "hour", "hour_ending", "he"])
+
+    out = df.copy()
+    if ts_col is not None:
+        out[col_name] = pd.to_datetime(out[ts_col], errors="coerce")
+    elif date_col is not None and hour_col is not None:
+        out[hour_col] = pd.to_numeric(out[hour_col], errors="coerce")
+        out[col_name] = pd.to_datetime(
+            out[date_col].astype(str) + " " + (out[hour_col].astype("Int64") - 1).astype(str) + ":00",
+            errors="coerce",
+        )
+    else:
+        raise ValueError("Need timestamp column or Date+Hour columns.")
+
+    out = out.dropna(subset=[col_name]).copy()
+    return out
+
+
+def _parse_weather_training_df(content: bytes) -> pd.DataFrame:
+    """
+    Parse uploaded weather CSV into [__dt, temperature_C, relative_humidity_pct].
+    """
+    parsed = _parse_uploaded_weather_csv(content)
+    wdf = pd.DataFrame(
+        {
+            "__dt": pd.to_datetime(parsed["timestamps"], errors="coerce"),
+            "temperature_C": pd.to_numeric(pd.Series(parsed["temperature_C"]), errors="coerce"),
+            "relative_humidity_pct": pd.to_numeric(pd.Series(parsed["relative_humidity_pct"]), errors="coerce"),
+        }
+    )
+    wdf = wdf.dropna(subset=["__dt", "temperature_C", "relative_humidity_pct"]).sort_values("__dt").reset_index(drop=True)
+    return wdf
+
+
 # ----------------------------
 # History helpers (baseline)
 # ----------------------------
@@ -1198,7 +1238,11 @@ def api_run_all(req: AllRequest):
 
 
 @app.post("/api/train")
-async def api_train(file: UploadFile | None = File(default=None), notes: str | None = Form(default=None)):
+async def api_train(
+    file: UploadFile | None = File(default=None),
+    weather_file: UploadFile | None = File(default=None),
+    notes: str | None = Form(default=None),
+):
     """
     Train a practical residential load model from uploaded CSV and return metrics.
     This does not overwrite your LSTM artifacts; it saves a separate user model artifact.
@@ -1226,6 +1270,56 @@ async def api_train(file: UploadFile | None = File(default=None), notes: str | N
 
     if df.empty:
         raise HTTPException(status_code=400, detail="Uploaded CSV has no rows.")
+
+    weather_merge_stats: dict | None = None
+    if weather_file is not None:
+        if weather_file.filename and not str(weather_file.filename).lower().endswith(".csv"):
+            raise HTTPException(status_code=400, detail="Weather training file must be a .csv")
+
+        try:
+            weather_content = await weather_file.read()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Unable to read weather training file: {e}")
+        if not weather_content:
+            raise HTTPException(status_code=400, detail="Uploaded weather training CSV is empty.")
+
+        try:
+            wdf = _parse_weather_training_df(weather_content)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Weather training CSV parse failed: {e}")
+
+        if wdf.empty:
+            raise HTTPException(status_code=400, detail="Weather training CSV has no valid rows.")
+
+        try:
+            load_df = _with_datetime_column(df, "__dt")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Power CSV datetime parse failed: {e}")
+
+        load_df["__dt_hour"] = pd.to_datetime(load_df["__dt"]).dt.floor("h")
+        wdf["__dt_hour"] = pd.to_datetime(wdf["__dt"]).dt.floor("h")
+        merged = load_df.merge(
+            wdf[["__dt_hour", "temperature_C", "relative_humidity_pct"]],
+            on="__dt_hour",
+            how="left",
+            suffixes=("", "_wx"),
+        )
+        matched = int(merged["temperature_C"].notna().sum())
+        if matched < max(12, int(0.05 * len(merged))):
+            raise HTTPException(
+                status_code=400,
+                detail="Weather merge matched too few rows. Check timestamp alignment/timezone between load and weather CSVs.",
+            )
+        df = merged.drop(columns=["__dt", "__dt_hour"], errors="ignore")
+        weather_merge_stats = {
+            "weather_filename": weather_file.filename,
+            "weather_rows": int(len(wdf)),
+            "power_rows_after_dt_parse": int(len(load_df)),
+            "merged_rows": int(len(merged)),
+            "weather_matched_rows": matched,
+        }
 
     try:
         from sklearn.ensemble import RandomForestRegressor
@@ -1295,5 +1389,6 @@ async def api_train(file: UploadFile | None = File(default=None), notes: str | N
             "actual": [round(float(v), 4) for v in y_val.tolist()],
             "predicted": [round(float(v), 4) for v in pred.tolist()],
         },
+        "weather_merge": weather_merge_stats,
         "notes": notes_text,
     }
