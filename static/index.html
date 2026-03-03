@@ -538,6 +538,22 @@
     };
   }
 
+  async function parseAPIResponse(res){
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
+    const raw = await res.text();
+
+    if(contentType.includes("application/json")){
+      try{
+        return JSON.parse(raw);
+      } catch {
+        throw new Error(`HTTP ${res.status}: Invalid JSON response from server.`);
+      }
+    }
+
+    const snippet = raw.replace(/\s+/g, " ").slice(0, 140);
+    throw new Error(`HTTP ${res.status}: Non-JSON response from server (${snippet})`);
+  }
+
   // --------------------
   // CSV upload
   // --------------------
@@ -554,7 +570,7 @@
     setStatus("Uploading CSV...");
     try{
       const res = await fetch("/api/upload/weather_csv", { method:"POST", body: fd });
-      const data = await res.json();
+      const data = await parseAPIResponse(res);
       if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
 
       uploadedFileId = data.file_id;
@@ -648,7 +664,7 @@
       }
 
       const res = await fetch(url, fetchOptions);
-      const data = await res.json();
+      const data = await parseAPIResponse(res);
       if(!res.ok || data.error) throw new Error(data.detail || data.error || ("HTTP " + res.status));
       lastResult = { mode, data };
 
