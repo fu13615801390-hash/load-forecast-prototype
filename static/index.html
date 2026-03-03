@@ -305,6 +305,14 @@
         <div class="sectionTitle">Residential CSV Input</div>
         <div class="fileRow">
           <div>
+            <label>Residential input source</label>
+            <select id="resInputSource">
+              <option value="default_repo" selected>Default (repo data)</option>
+              <option value="uploaded_csv">Uploaded CSV</option>
+              <option value="live_api">Live API weather</option>
+            </select>
+          </div>
+          <div>
             <label>Weather CSV for Residential run</label>
             <input id="resWeatherFile" type="file" accept=".csv" />
             <div class="hint">Columns: timestamp + temperature + humidity (accepted aliases supported).</div>
@@ -651,9 +659,16 @@
       let url, body, fetchOptions;
 
       if(mode === "res"){
-        if(uploadedResFileId){
+        const source = document.getElementById("resInputSource").value;
+        if(source === "uploaded_csv"){
+          if(!uploadedResFileId){
+            throw new Error("Select 'Uploaded CSV' requires uploading a residential weather CSV first.");
+          }
           url = "/api/forecast/res_from_upload/" + uploadedResFileId;
-          fetchOptions = { method:"POST" };
+          fetchOptions = { method: "POST" };
+        } else if(source === "default_repo"){
+          url = "/api/forecast/res_default_repo";
+          fetchOptions = { method: "POST" };
         } else {
           url = "/api/forecast/res";
           body = { location_key: document.getElementById("locRes").value, ...common };
@@ -699,8 +714,8 @@
         setStatus("Success.", "ok");
       } else {
         const modelSrc = data.model_source ? ` Model source: ${data.model_source}.` : "";
-        const uploadSrc = (mode === "res" && uploadedResFileId) ? " Using uploaded residential weather CSV." : "";
-        setStatus(`Success.${modelSrc}${uploadSrc}`, "ok");
+        const inputSrc = data.input_source ? ` Input source: ${data.input_source}.` : "";
+        setStatus(`Success.${modelSrc}${inputSrc}`, "ok");
       }
     } catch(e){
       setStatus("Failed: " + e.message, "err");
