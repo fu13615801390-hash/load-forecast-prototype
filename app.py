@@ -11,6 +11,7 @@ import io
 import glob
 import numpy as np
 import joblib
+import uuid
 
 app = FastAPI(title="Load Forecast Interface Prototype")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -20,6 +21,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ----------------------------
 HISTORY_STORE: dict[str, list[list[float]]] = {}
 HISTORY_KEEP_LAST = 14
+WEATHER_UPLOAD_STORE: dict[str, dict] = {}
 HISTORICAL_LOAD_CSV = os.getenv("HISTORICAL_LOAD_CSV", "data/historical_load.csv")
 USE_PRED_HISTORY_BASELINE_FALLBACK = os.getenv("USE_PRED_HISTORY_BASELINE_FALLBACK", "false").lower() == "true"
 RESIDENTIAL_BASELINE_CSV = os.getenv(
@@ -185,6 +187,54 @@ def mock_forecast(sector: str, weather_payload: dict):
         "unit": "kW",
         "timestamps": ts,
         "predicted_load": yhat,
+    }
+
+
+def _parse_uploaded_weather_csv(content: bytes) -> dict:
+    try:
+        df = pd.read_csv(io.BytesIO(content), low_memory=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid CSV format: {e}")
+
+    cols = list(df.columns)
+
+    ts_col = _find_first_col(df, ["timestamp", "datetime", "dt", "time", "Date/Time (LST)", "date/time (lst)"])
+    if ts_col is None:
+        ts_col = next((c for c in cols if "date/time" in c.lower()), None)
+
+    temp_col = _find_first_col(df, ["temperature_C", "temp_c", "temp", "temperature"])
+    if temp_col is None:
+        temp_col = next(
+            (
+                c
+                for c in cols
+                if ("temp" in c.lower()) and ("dew" not in c.lower()) and ("flag" not in c.lower())
+            ),
+            None,
+        )
+
+    hum_col = _find_first_col(df, ["relative_humidity_pct", "humidity_percent", "humidity", "rh", "Rel Hum (%)"])
+    if hum_col is None:
+        hum_col = next((c for c in cols if ("rel hum" in c.lower()) and ("flag" not in c.lower())), None)
+
+    if ts_col is None or temp_col is None or hum_col is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Weather CSV must include timestamp, temperature_C (or temp), and relative_humidity_pct (or humidity).",
+        )
+
+    tmp = df[[ts_col, temp_col, hum_col]].copy()
+    tmp[ts_col] = pd.to_datetime(tmp[ts_col], errors="coerce")
+    tmp[temp_col] = pd.to_numeric(tmp[temp_col], errors="coerce")
+    tmp[hum_col] = pd.to_numeric(tmp[hum_col], errors="coerce")
+    tmp = tmp.dropna(subset=[ts_col, temp_col, hum_col]).sort_values(ts_col).reset_index(drop=True)
+    if tmp.empty:
+        raise HTTPException(status_code=400, detail="Weather CSV has no valid rows after parsing.")
+
+    return {
+        "timestamps": [d.isoformat(timespec="minutes") for d in tmp[ts_col].tolist()],
+        "temperature_C": [round(float(v), 4) for v in tmp[temp_col].tolist()],
+        "relative_humidity_pct": [round(float(v), 4) for v in tmp[hum_col].tolist()],
     }
 
 
@@ -593,7 +643,15 @@ def _build_train_dataframe(df: pd.DataFrame):
     return work, X, y, feature_cols, target_col
 
 
-def _predict_residential_with_user_model(start: datetime, horizon_hours: int, label: str, lat: float, lon: float) -> list[float]:
+def _predict_residential_with_user_model(
+    start: datetime,
+    horizon_hours: int,
+    label: str,
+    lat: float,
+    lon: float,
+    weather_override: dict | None = None,
+    timestamps_override: list[datetime] | None = None,
+) -> list[float]:
     """
     Forecast residential load using trained user model (if available).
     Uses recursive lag features from historical + predicted values.
@@ -616,13 +674,26 @@ def _predict_residential_with_user_model(start: datetime, horizon_hours: int, la
     last_known = float(hist["load"].iloc[-1])
     fallback_24h = float(hist["load"].tail(24).mean()) if len(hist) >= 24 else last_known
 
-    w = mock_weather(label, lat, lon, start, horizon_hours)
-    temps = [float(v) for v in w["temperature_C"]]
-    hums = [float(v) for v in w["relative_humidity_pct"]]
+    if weather_override is not None:
+        temps = [float(v) for v in weather_override.get("temperature_C", [])]
+        hums = [float(v) for v in weather_override.get("relative_humidity_pct", [])]
+    else:
+        w = mock_weather(label, lat, lon, start, horizon_hours)
+        temps = [float(v) for v in w["temperature_C"]]
+        hums = [float(v) for v in w["relative_humidity_pct"]]
+
+    if not temps or not hums:
+        raise ValueError("Weather series is empty for trained model prediction.")
+    n = min(horizon_hours, len(temps), len(hums))
+    if n <= 0:
+        raise ValueError("No overlapping weather horizon for prediction.")
 
     preds: list[float] = []
-    for i in range(horizon_hours):
-        dt = pd.Timestamp(start + timedelta(hours=i + 1))
+    for i in range(n):
+        if timestamps_override is not None and i < len(timestamps_override):
+            dt = pd.Timestamp(timestamps_override[i])
+        else:
+            dt = pd.Timestamp(start + timedelta(hours=i + 1))
         lag1 = dt_to_load.get(dt - pd.Timedelta(hours=1), last_known if preds else last_known)
         lag24 = dt_to_load.get(dt - pd.Timedelta(hours=24), fallback_24h)
 
@@ -712,6 +783,168 @@ def api_weather(req: ModelRequest):
     start = _parse_start(req.start_iso)
     label, lat, lon = resolve_preset(req.location_key)
     return mock_weather(label, lat, lon, start, req.horizon_hours)
+
+
+@app.post("/api/upload/weather_csv")
+async def api_upload_weather_csv(file: UploadFile = File(...)):
+    if not str(file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Please upload a .csv weather file.")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded weather CSV is empty.")
+
+    parsed = _parse_uploaded_weather_csv(content)
+    file_id = uuid.uuid4().hex
+    WEATHER_UPLOAD_STORE[file_id] = parsed
+
+    return {
+        "ok": True,
+        "file_id": file_id,
+        "filename": file.filename,
+        "rows": len(parsed["timestamps"]),
+        "columns": ["timestamp", "temperature_C", "relative_humidity_pct"],
+    }
+
+
+def _get_uploaded_weather(file_id: str) -> dict:
+    payload = WEATHER_UPLOAD_STORE.get(file_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"Uploaded weather file_id not found: {file_id}")
+    return payload
+
+
+def _forecast_res_with_weather_payload(weather_payload: dict, location_key: str = "toronto") -> dict:
+    label, lat, lon = resolve_preset(location_key)
+    ts_all = weather_payload.get("timestamps", [])
+    temp_all = weather_payload.get("temperature_C", [])
+    hum_all = weather_payload.get("relative_humidity_pct", [])
+    n = min(24, len(ts_all), len(temp_all), len(hum_all))
+    if n <= 0:
+        raise HTTPException(status_code=400, detail="Uploaded weather payload has no usable rows.")
+
+    ts = ts_all[:n]
+    temp = temp_all[:n]
+    hum = hum_all[:n]
+    ts_dt = [datetime.fromisoformat(str(t)) for t in ts]
+    start = ts_dt[0] - timedelta(hours=1)
+
+    model_source = "user_trained_rf"
+    try:
+        yhat = _predict_residential_with_user_model(
+            start,
+            n,
+            label,
+            lat,
+            lon,
+            weather_override={"temperature_C": temp, "relative_humidity_pct": hum},
+            timestamps_override=ts_dt,
+        )
+    except Exception:
+        try:
+            window_rows = build_past_168_window(label, lat, lon, start)
+            yhat = _ml_predict_residential_24h(window_rows)[:n]
+            model_source = "default_res_lstm"
+        except Exception:
+            fallback = mock_forecast(
+                "res",
+                {"timestamps": ts, "temperature_C": temp, "relative_humidity_pct": hum},
+            )
+            yhat = [float(v) for v in fallback["predicted_load"][:n]]
+            model_source = "res_weather_rule_fallback"
+
+    out = {
+        "module": "forecast_res_ml",
+        "sector": "res",
+        "unit": "kWh",
+        "timestamps": ts,
+        "predicted_load": [round(float(v), 2) for v in yhat],
+        "location": label,
+        "lat": lat,
+        "lon": lon,
+        "historical_baseline": _historical_baseline_from_residential_csv(ts),
+        "baseline_source": "residential_csv",
+        "baseline_source_path": LAST_RESIDENTIAL_BASELINE_PATH,
+        "model_source": model_source,
+    }
+    if out["historical_baseline"] is None:
+        out["historical_baseline"] = _historical_baseline_from_actual_csv(location_key, "res", ts)
+        out["baseline_source"] = "actual_history_csv"
+        out["baseline_source_path"] = HISTORICAL_LOAD_CSV if out["historical_baseline"] is not None else None
+    if out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
+        out["historical_baseline"] = _historical_baseline(location_key, "res", n)
+        out["baseline_source"] = "prediction_history_fallback"
+        out["baseline_source_path"] = None
+    if out["historical_baseline"] is None:
+        out["baseline_source"] = "none"
+        out["baseline_source_path"] = None
+
+    _update_history(location_key, "res", out["predicted_load"])
+    return out
+
+
+@app.post("/api/forecast/res_from_upload/{file_id}")
+def api_forecast_res_from_upload(file_id: str):
+    weather_payload = _get_uploaded_weather(file_id)
+    return _forecast_res_with_weather_payload(weather_payload, location_key="toronto")
+
+
+@app.post("/api/forecast/com_from_upload/{file_id}")
+def api_forecast_com_from_upload(file_id: str):
+    weather_payload = _get_uploaded_weather(file_id)
+    n = min(24, len(weather_payload["timestamps"]), len(weather_payload["temperature_C"]))
+    w = {
+        "timestamps": weather_payload["timestamps"][:n],
+        "temperature_C": weather_payload["temperature_C"][:n],
+        "relative_humidity_pct": weather_payload["relative_humidity_pct"][:n],
+    }
+    out = mock_forecast("com", w)
+    out["location"] = "Uploaded weather CSV"
+    out["lat"] = ""
+    out["lon"] = ""
+    out["baseline_source"] = "none"
+    out["historical_baseline"] = None
+    return out
+
+
+@app.post("/api/forecast/ind_from_upload/{file_id}")
+def api_forecast_ind_from_upload(file_id: str):
+    weather_payload = _get_uploaded_weather(file_id)
+    n = min(24, len(weather_payload["timestamps"]), len(weather_payload["temperature_C"]))
+    w = {
+        "timestamps": weather_payload["timestamps"][:n],
+        "temperature_C": weather_payload["temperature_C"][:n],
+        "relative_humidity_pct": weather_payload["relative_humidity_pct"][:n],
+    }
+    out = mock_forecast("ind", w)
+    out["location"] = "Uploaded weather CSV"
+    out["lat"] = ""
+    out["lon"] = ""
+    out["baseline_source"] = "none"
+    out["historical_baseline"] = None
+    return out
+
+
+@app.post("/api/run_all_from_upload/{file_id}")
+def api_run_all_from_upload(file_id: str):
+    weather_payload = _get_uploaded_weather(file_id)
+    n = min(24, len(weather_payload["timestamps"]), len(weather_payload["temperature_C"]))
+    w = {
+        "timestamps": weather_payload["timestamps"][:n],
+        "temperature_C": weather_payload["temperature_C"][:n],
+        "relative_humidity_pct": weather_payload["relative_humidity_pct"][:n],
+    }
+    res_out = _forecast_res_with_weather_payload(w, location_key="toronto")
+    com_out = mock_forecast("com", w)
+    ind_out = mock_forecast("ind", w)
+    com_out["historical_baseline"] = None
+    ind_out["historical_baseline"] = None
+
+    return {
+        "module": "pipeline_all_upload",
+        "residential": {"forecast": res_out, "weather": w},
+        "commercial": {"forecast": com_out, "weather": w},
+        "industrial": {"forecast": ind_out, "weather": w},
+    }
 
 
 @app.post("/api/forecast/res")
