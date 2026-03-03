@@ -18,6 +18,10 @@ HISTORY_STORE: dict[str, list[list[float]]] = {}
 HISTORY_KEEP_LAST = 14
 HISTORICAL_LOAD_CSV = os.getenv("HISTORICAL_LOAD_CSV", "data/historical_load.csv")
 USE_PRED_HISTORY_BASELINE_FALLBACK = os.getenv("USE_PRED_HISTORY_BASELINE_FALLBACK", "false").lower() == "true"
+RESIDENTIAL_BASELINE_CSV = os.getenv(
+    "RESIDENTIAL_BASELINE_CSV",
+    r"c:\Users\14184\Downloads\BV06 - Residential Energy Consumption Data (2020-2024) - Jan. 2020.csv",
+)
 
 
 @app.get("/")
@@ -282,6 +286,62 @@ def _historical_baseline_from_actual_csv(
     return [round(float(v), 2) if not pd.isna(v) else None for v in baseline]  # type: ignore[list-item]
 
 
+def _historical_baseline_from_residential_csv(target_timestamps: list[str]) -> list[float] | None:
+    """
+    Build residential baseline from Toronto residential consumption CSV.
+    Expected columns:
+      - Date
+      - Hour (1-24)
+      - Total Consumption (kWh)
+    """
+    if not os.path.isfile(RESIDENTIAL_BASELINE_CSV):
+        return None
+
+    try:
+        df = pd.read_csv(RESIDENTIAL_BASELINE_CSV)
+    except Exception:
+        return None
+
+    required = ["Date", "Hour", "Total Consumption (kWh)"]
+    if not all(c in df.columns for c in required):
+        return None
+
+    temp = df.copy()
+    temp["Hour"] = pd.to_numeric(temp["Hour"], errors="coerce")
+    temp["Total Consumption (kWh)"] = pd.to_numeric(temp["Total Consumption (kWh)"], errors="coerce")
+    temp["dt"] = pd.to_datetime(
+        temp["Date"].astype(str) + " " + (temp["Hour"].astype("Int64") - 1).astype(str) + ":00",
+        errors="coerce",
+    )
+    temp = temp.dropna(subset=["dt", "Total Consumption (kWh)"])
+    if temp.empty:
+        return None
+
+    temp["hour"] = temp["dt"].dt.hour
+    temp["dow"] = temp["dt"].dt.dayofweek
+
+    baseline: list[float] = []
+    for ts in target_timestamps:
+        t = pd.to_datetime(ts, errors="coerce")
+        if pd.isna(t):
+            baseline.append(float("nan"))
+            continue
+
+        # Prefer same hour + weekday, fallback to same hour.
+        subset = temp[(temp["hour"] == int(t.hour)) & (temp["dow"] == int(t.dayofweek))]
+        if subset.empty:
+            subset = temp[temp["hour"] == int(t.hour)]
+
+        if subset.empty:
+            baseline.append(float("nan"))
+        else:
+            baseline.append(float(subset["Total Consumption (kWh)"].mean()))
+
+    if all(pd.isna(v) for v in baseline):
+        return None
+    return [round(float(v), 2) if not pd.isna(v) else None for v in baseline]  # type: ignore[list-item]
+
+
 # ----------------------------
 # ML support: build 168h past window (for LSTM)
 # ----------------------------
@@ -403,9 +463,12 @@ def api_forecast_res(req: ModelRequest):
         "location": label,
         "lat": lat,
         "lon": lon,
-        "historical_baseline": _historical_baseline_from_actual_csv(req.location_key, "res", ts),
-        "baseline_source": "actual_history_csv",
+        "historical_baseline": _historical_baseline_from_residential_csv(ts),
+        "baseline_source": "residential_csv",
     }
+    if out["historical_baseline"] is None:
+        out["historical_baseline"] = _historical_baseline_from_actual_csv(req.location_key, "res", ts)
+        out["baseline_source"] = "actual_history_csv"
     if out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
         out["historical_baseline"] = _historical_baseline(req.location_key, "res", 24)
         out["baseline_source"] = "prediction_history_fallback"
@@ -493,9 +556,12 @@ def api_run_all(req: AllRequest):
         "unit": "kWh",
         "timestamps": res_ts,
         "predicted_load": [round(float(v), 2) for v in res_yhat],
-        "historical_baseline": _historical_baseline_from_actual_csv(req.res_location_key, "res", res_ts),
-        "baseline_source": "actual_history_csv",
+        "historical_baseline": _historical_baseline_from_residential_csv(res_ts),
+        "baseline_source": "residential_csv",
     }
+    if res_out["historical_baseline"] is None:
+        res_out["historical_baseline"] = _historical_baseline_from_actual_csv(req.res_location_key, "res", res_ts)
+        res_out["baseline_source"] = "actual_history_csv"
     if res_out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
         res_out["historical_baseline"] = _historical_baseline(req.res_location_key, "res", 24)
         res_out["baseline_source"] = "prediction_history_fallback"
