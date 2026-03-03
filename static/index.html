@@ -306,10 +306,6 @@
           <label>Start time</label>
           <input id="start" type="datetime-local" />
         </div>
-        <div>
-          <label>Horizon (hours)</label>
-          <input id="horizon" type="number" min="24" max="24" value="24" readonly />
-        </div>
       </div>
 
       <!-- Train Your Own Model -->
@@ -675,14 +671,8 @@
       if(mode === "all"){
         setStatus("Success.", "ok");
       } else {
-        const hasBaseline = Array.isArray(data.historical_baseline) && data.historical_baseline.some(v => v != null && !Number.isNaN(Number(v)));
-        const src = data.baseline_source || "none";
         const modelSrc = data.model_source ? ` Model source: ${data.model_source}.` : "";
-        if(hasBaseline){
-          setStatus(`Success.${modelSrc} Baseline source: ${src}.`, "ok");
-        } else {
-          setStatus(`Success, but no historical baseline found (source: ${src}).${modelSrc}`, "err");
-        }
+        setStatus(`Success.${modelSrc}`, "ok");
       }
     } catch(e){
       setStatus("Failed: " + e.message, "err");
@@ -711,20 +701,16 @@
   function renderSingle(mode, data){
     // Single chart goes in chartSingle
     const datasets = [{ label: "Forecast (current)", data: data.predicted_load }];
-    if(data.historical_baseline && Array.isArray(data.historical_baseline)){
-      datasets.push({ label: "Historical baseline", data: data.historical_baseline });
-    }
 
     plotISOTime("chartSingle", data.timestamps, datasets, 5, data.unit || "");
 
     const rows = data.timestamps.map((t, idx) => ([
       t.replace("T"," "),
-      data.predicted_load[idx],
-      (data.historical_baseline && Array.isArray(data.historical_baseline)) ? data.historical_baseline[idx] : ""
+      data.predicted_load[idx]
     ]));
 
     document.getElementById("tableSingle").innerHTML = toTableHTML(
-      ["Time", `Current${data.unit ? ` (${data.unit})` : ""}`, `Baseline${data.unit ? ` (${data.unit})` : ""}`],
+      ["Time", `Current${data.unit ? ` (${data.unit})` : ""}`],
       rows
     );
 
@@ -742,43 +728,37 @@
 
     // Residential chart
     plotISOTime("chartRes", r.timestamps, [
-      { label: "Residential", data: r.predicted_load },
-      ...(r.historical_baseline ? [{ label:"Baseline", data:r.historical_baseline }] : [])
+      { label: "Residential", data: r.predicted_load }
     ], 6, r.unit || "");
     document.getElementById("tableRes").innerHTML = toTableHTML(
-      ["Time", `Current${r.unit ? ` (${r.unit})` : ""}`, `Baseline${r.unit ? ` (${r.unit})` : ""}`],
+      ["Time", `Current${r.unit ? ` (${r.unit})` : ""}`],
       r.timestamps.map((t, idx)=>[
         t.replace("T"," "),
-        r.predicted_load[idx],
-        (r.historical_baseline && Array.isArray(r.historical_baseline)) ? r.historical_baseline[idx] : ""
+        r.predicted_load[idx]
       ])
     );
 
     // Commercial chart
     plotISOTime("chartCom", c.timestamps, [
-      { label: "Commercial", data: c.predicted_load },
-      ...(c.historical_baseline ? [{ label:"Baseline", data:c.historical_baseline }] : [])
+      { label: "Commercial", data: c.predicted_load }
     ], 6, c.unit || "");
     document.getElementById("tableCom").innerHTML = toTableHTML(
-      ["Time", `Current${c.unit ? ` (${c.unit})` : ""}`, `Baseline${c.unit ? ` (${c.unit})` : ""}`],
+      ["Time", `Current${c.unit ? ` (${c.unit})` : ""}`],
       c.timestamps.map((t, idx)=>[
         t.replace("T"," "),
-        c.predicted_load[idx],
-        (c.historical_baseline && Array.isArray(c.historical_baseline)) ? c.historical_baseline[idx] : ""
+        c.predicted_load[idx]
       ])
     );
 
     // Industrial chart
     plotISOTime("chartInd", i.timestamps, [
-      { label: "Industrial", data: i.predicted_load },
-      ...(i.historical_baseline ? [{ label:"Baseline", data:i.historical_baseline }] : [])
+      { label: "Industrial", data: i.predicted_load }
     ], 6, i.unit || "");
     document.getElementById("tableInd").innerHTML = toTableHTML(
-      ["Time", `Current${i.unit ? ` (${i.unit})` : ""}`, `Baseline${i.unit ? ` (${i.unit})` : ""}`],
+      ["Time", `Current${i.unit ? ` (${i.unit})` : ""}`],
       i.timestamps.map((t, idx)=>[
         t.replace("T"," "),
-        i.predicted_load[idx],
-        (i.historical_baseline && Array.isArray(i.historical_baseline)) ? i.historical_baseline[idx] : ""
+        i.predicted_load[idx]
       ])
     );
   }
@@ -798,22 +778,19 @@
     if(mode === "all"){
       const bundle = normalizeAllPayload(data);
 
-      rows.push(["model","time","predicted","baseline"]);
+      rows.push(["model","time","predicted"]);
       for(const [name, pack] of Object.entries(bundle)){
         const f = pack.forecast;
-        const hist = f.historical_baseline || [];
         for(let i=0;i<f.timestamps.length;i++){
-          rows.push([name, f.timestamps[i], f.predicted_load[i], hist[i] ?? ""]);
+          rows.push([name, f.timestamps[i], f.predicted_load[i]]);
         }
       }
     } else {
-      rows.push(["time","predicted","baseline","location","lat","lon"]);
-      const hist = data.historical_baseline || [];
+      rows.push(["time","predicted","location","lat","lon"]);
       for(let i=0;i<data.timestamps.length;i++){
         rows.push([
           data.timestamps[i],
           data.predicted_load[i],
-          hist[i] ?? "",
           data.location ?? "",
           data.lat ?? "",
           data.lon ?? ""
