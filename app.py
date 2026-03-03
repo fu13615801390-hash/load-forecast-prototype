@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import math
 import os
 import requests
+import pandas as pd
 
 app = FastAPI(title="Load Forecast Interface Prototype")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -15,6 +16,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ----------------------------
 HISTORY_STORE: dict[str, list[list[float]]] = {}
 HISTORY_KEEP_LAST = 14
+HISTORICAL_LOAD_CSV = os.getenv("HISTORICAL_LOAD_CSV", "data/historical_load.csv")
+USE_PRED_HISTORY_BASELINE_FALLBACK = os.getenv("USE_PRED_HISTORY_BASELINE_FALLBACK", "false").lower() == "true"
 
 
 @app.get("/")
@@ -200,6 +203,85 @@ def _historical_baseline(location_key: str, sector: str, horizon: int) -> list[f
     return [round(x, 2) for x in baseline]
 
 
+def _find_first_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    cols_lower = {c.lower(): c for c in df.columns}
+    for c in candidates:
+        if c.lower() in cols_lower:
+            return cols_lower[c.lower()]
+    return None
+
+
+def _historical_baseline_from_actual_csv(
+    location_key: str, sector: str, target_timestamps: list[str]
+) -> list[float] | None:
+    """
+    Build baseline from historical actual load CSV.
+    Expected columns (flexible names/case):
+      - timestamp column: timestamp|datetime|dt|time
+      - load column: load|actual_load|demand|kwh|kw
+    Optional filter columns:
+      - sector column: sector|model
+      - location column: location_key|location
+    """
+    if not os.path.isfile(HISTORICAL_LOAD_CSV):
+        return None
+
+    try:
+        df = pd.read_csv(HISTORICAL_LOAD_CSV)
+    except Exception:
+        return None
+
+    ts_col = _find_first_col(df, ["timestamp", "datetime", "dt", "time"])
+    load_col = _find_first_col(df, ["load", "actual_load", "demand", "kwh", "kw"])
+    if ts_col is None or load_col is None:
+        return None
+
+    df = df.copy()
+    df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce")
+    df[load_col] = pd.to_numeric(df[load_col], errors="coerce")
+    df = df.dropna(subset=[ts_col, load_col])
+    if df.empty:
+        return None
+
+    sector_col = _find_first_col(df, ["sector", "model"])
+    if sector_col is not None:
+        df = df[df[sector_col].astype(str).str.lower() == str(sector).lower()]
+        if df.empty:
+            return None
+
+    location_col = _find_first_col(df, ["location_key", "location"])
+    if location_col is not None:
+        # Match both key and common label text where available.
+        lk = str(location_key).lower()
+        df_loc = df[df[location_col].astype(str).str.lower() == lk]
+        if not df_loc.empty:
+            df = df_loc
+
+    df["hour"] = df[ts_col].dt.hour
+    df["dow"] = df[ts_col].dt.dayofweek
+
+    baseline: list[float] = []
+    for ts in target_timestamps:
+        t = pd.to_datetime(ts, errors="coerce")
+        if pd.isna(t):
+            baseline.append(float("nan"))
+            continue
+
+        # Prefer same hour + weekday, fallback to same hour.
+        subset = df[(df["hour"] == int(t.hour)) & (df["dow"] == int(t.dayofweek))]
+        if subset.empty:
+            subset = df[df["hour"] == int(t.hour)]
+
+        if subset.empty:
+            baseline.append(float("nan"))
+        else:
+            baseline.append(float(subset[load_col].mean()))
+
+    if all(pd.isna(v) for v in baseline):
+        return None
+    return [round(float(v), 2) if not pd.isna(v) else None for v in baseline]  # type: ignore[list-item]
+
+
 # ----------------------------
 # ML support: build 168h past window (for LSTM)
 # ----------------------------
@@ -321,8 +403,14 @@ def api_forecast_res(req: ModelRequest):
         "location": label,
         "lat": lat,
         "lon": lon,
-        "historical_baseline": _historical_baseline(req.location_key, "res", 24),
+        "historical_baseline": _historical_baseline_from_actual_csv(req.location_key, "res", ts),
+        "baseline_source": "actual_history_csv",
     }
+    if out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
+        out["historical_baseline"] = _historical_baseline(req.location_key, "res", 24)
+        out["baseline_source"] = "prediction_history_fallback"
+    if out["historical_baseline"] is None:
+        out["baseline_source"] = "none"
 
     # store history (use 24 horizon for ML)
     _update_history(req.location_key, "res", out["predicted_load"])
@@ -340,10 +428,17 @@ def api_forecast_com(req: ModelRequest):
 
     sector = "com"
     out = mock_forecast(sector, w)
-    baseline = _historical_baseline(req.location_key, sector, req.horizon_hours)
+    baseline = _historical_baseline_from_actual_csv(req.location_key, sector, out["timestamps"])
+    baseline_source = "actual_history_csv"
+    if baseline is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
+        baseline = _historical_baseline(req.location_key, sector, req.horizon_hours)
+        baseline_source = "prediction_history_fallback"
+    if baseline is None:
+        baseline_source = "none"
     _update_history(req.location_key, sector, out["predicted_load"])
 
     out["historical_baseline"] = baseline
+    out["baseline_source"] = baseline_source
     out["location"] = label
     out["lat"] = lat
     out["lon"] = lon
@@ -361,10 +456,17 @@ def api_forecast_ind(req: ModelRequest):
 
     sector = "ind"
     out = mock_forecast(sector, w)
-    baseline = _historical_baseline(req.location_key, sector, req.horizon_hours)
+    baseline = _historical_baseline_from_actual_csv(req.location_key, sector, out["timestamps"])
+    baseline_source = "actual_history_csv"
+    if baseline is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
+        baseline = _historical_baseline(req.location_key, sector, req.horizon_hours)
+        baseline_source = "prediction_history_fallback"
+    if baseline is None:
+        baseline_source = "none"
     _update_history(req.location_key, sector, out["predicted_load"])
 
     out["historical_baseline"] = baseline
+    out["baseline_source"] = baseline_source
     out["location"] = label
     out["lat"] = lat
     out["lon"] = lon
@@ -391,8 +493,14 @@ def api_run_all(req: AllRequest):
         "unit": "kWh",
         "timestamps": res_ts,
         "predicted_load": [round(float(v), 2) for v in res_yhat],
-        "historical_baseline": _historical_baseline(req.res_location_key, "res", 24),
+        "historical_baseline": _historical_baseline_from_actual_csv(req.res_location_key, "res", res_ts),
+        "baseline_source": "actual_history_csv",
     }
+    if res_out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
+        res_out["historical_baseline"] = _historical_baseline(req.res_location_key, "res", 24)
+        res_out["baseline_source"] = "prediction_history_fallback"
+    if res_out["historical_baseline"] is None:
+        res_out["baseline_source"] = "none"
     _update_history(req.res_location_key, "res", res_out["predicted_load"])
 
     res_weather = mock_weather(res_label, res_lat, res_lon, start, req.horizon_hours)
@@ -401,14 +509,30 @@ def api_run_all(req: AllRequest):
     com_label, com_lat, com_lon = resolve_preset(req.com_location_key)
     com_weather = mock_weather(com_label, com_lat, com_lon, start, req.horizon_hours)
     com_out = mock_forecast("com", com_weather)
-    com_out["historical_baseline"] = _historical_baseline(req.com_location_key, "com", req.horizon_hours)
+    com_out["historical_baseline"] = _historical_baseline_from_actual_csv(
+        req.com_location_key, "com", com_out["timestamps"]
+    )
+    com_out["baseline_source"] = "actual_history_csv"
+    if com_out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
+        com_out["historical_baseline"] = _historical_baseline(req.com_location_key, "com", req.horizon_hours)
+        com_out["baseline_source"] = "prediction_history_fallback"
+    if com_out["historical_baseline"] is None:
+        com_out["baseline_source"] = "none"
     _update_history(req.com_location_key, "com", com_out["predicted_load"])
 
     # ---- Industrial (mock) ----
     ind_label, ind_lat, ind_lon = resolve_preset(req.ind_location_key)
     ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, req.horizon_hours)
     ind_out = mock_forecast("ind", ind_weather)
-    ind_out["historical_baseline"] = _historical_baseline(req.ind_location_key, "ind", req.horizon_hours)
+    ind_out["historical_baseline"] = _historical_baseline_from_actual_csv(
+        req.ind_location_key, "ind", ind_out["timestamps"]
+    )
+    ind_out["baseline_source"] = "actual_history_csv"
+    if ind_out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
+        ind_out["historical_baseline"] = _historical_baseline(req.ind_location_key, "ind", req.horizon_hours)
+        ind_out["baseline_source"] = "prediction_history_fallback"
+    if ind_out["historical_baseline"] is None:
+        ind_out["baseline_source"] = "none"
     _update_history(req.ind_location_key, "ind", ind_out["predicted_load"])
 
     return {
