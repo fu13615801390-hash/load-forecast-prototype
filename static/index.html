@@ -217,7 +217,7 @@
   <h1>Load Forecast Web Interface (Prototype)</h1>
   <p>
     Requirements enabled: hide/show location dropdowns by model, defaults (Res/Com Toronto; Ind Ontario),
-    Train-your-own UI + file input, CSV upload, and ALL mode shows 3 separate graphs.
+    Train-your-own UI + file input, and ALL mode shows 3 separate graphs.
   </p>
 </header>
 
@@ -313,21 +313,6 @@
         </div>
       </div>
 
-      <!-- CSV Upload -->
-      <div class="sectionTitle">Upload (CSV)</div>
-      <div class="fileRow">
-        <div>
-          <label>Weather CSV (timestamp, temperature_C, relative_humidity_pct)</label>
-          <input id="csvFile" type="file" accept=".csv" />
-          <div class="hint">Uploads to backend endpoint <code>/api/upload/weather_csv</code>.</div>
-        </div>
-        <div class="row2">
-          <button class="secondary" onclick="uploadCSV()">Upload CSV</button>
-          <button class="secondary" onclick="clearUpload()">Clear</button>
-        </div>
-        <div class="smallNote" id="uploadInfo">No uploaded file.</div>
-      </div>
-
       <!-- Train Your Own Model -->
       <div id="trainBox" class="hidden">
         <div class="sectionTitle">Train your own model</div>
@@ -406,7 +391,7 @@
     </div>
 
     <div class="hint" style="margin-top:10px;">
-      If your backend doesn’t support upload/train endpoints yet, the UI will show a clear error message.
+      If your backend doesn’t support training endpoint yet, the UI will show a clear error message.
     </div>
   </main>
 </div>
@@ -417,7 +402,6 @@
   // --------------------
   let charts = {};            // map canvasId -> Chart instance
   let lastResult = null;      // { mode, data }
-  let uploadedFileId = null;  // from /api/upload/weather_csv
 
   // --------------------
   // UI helpers
@@ -571,42 +555,6 @@
   }
 
   // --------------------
-  // CSV upload
-  // --------------------
-  async function uploadCSV(){
-    const fileInput = document.getElementById("csvFile");
-    if(!fileInput.files || fileInput.files.length === 0){
-      setStatus("Please choose a CSV file first.", "err");
-      return;
-    }
-
-    const fd = new FormData();
-    fd.append("file", fileInput.files[0]);
-
-    setStatus("Uploading CSV...");
-    try{
-      const res = await fetch("/api/upload/weather_csv", { method:"POST", body: fd });
-      const data = await parseAPIResponse(res);
-      if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
-
-      uploadedFileId = data.file_id;
-      document.getElementById("uploadInfo").textContent =
-        `Uploaded: ${data.filename} | rows=${data.rows} | file_id=${data.file_id.slice(0,8)}...`;
-
-      setStatus("CSV uploaded successfully.", "ok");
-    } catch(e){
-      setStatus("Upload failed: " + e.message + " (Backend endpoint missing or error)", "err");
-    }
-  }
-
-  function clearUpload(){
-    uploadedFileId = null;
-    document.getElementById("csvFile").value = "";
-    document.getElementById("uploadInfo").textContent = "No uploaded file.";
-    setStatus("Upload cleared.", "ok");
-  }
-
-  // --------------------
   // Train
   // --------------------
   async function trainModel(){
@@ -681,52 +629,27 @@
     try{
       let url, body, fetchOptions;
 
-      // If user uploaded CSV and wants to use it:
-      // - We auto-use upload endpoints when a file_id exists and mode is res/com/ind/all
-      // - If upload endpoints don't exist in backend, UI shows a clear error
-      const useUpload = !!uploadedFileId;
-
       if(mode === "res"){
-        if(useUpload){
-          url = "/api/forecast/res_from_upload/" + uploadedFileId;
-          fetchOptions = { method:"POST" };
-        } else {
-          url = "/api/forecast/res";
-          body = { location_key: document.getElementById("locRes").value, ...common };
-          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
-        }
+        url = "/api/forecast/res";
+        body = { location_key: document.getElementById("locRes").value, ...common };
+        fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
       } else if(mode === "com"){
-        if(useUpload){
-          url = "/api/forecast/com_from_upload/" + uploadedFileId;
-          fetchOptions = { method:"POST" };
-        } else {
-          url = "/api/forecast/com";
-          body = { location_key: document.getElementById("locCom").value, ...common };
-          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
-        }
+        url = "/api/forecast/com";
+        body = { location_key: document.getElementById("locCom").value, ...common };
+        fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
       } else if(mode === "ind"){
-        if(useUpload){
-          url = "/api/forecast/ind_from_upload/" + uploadedFileId;
-          fetchOptions = { method:"POST" };
-        } else {
-          url = "/api/forecast/ind";
-          body = { location_key: document.getElementById("locInd").value, ...common };
-          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
-        }
+        url = "/api/forecast/ind";
+        body = { location_key: document.getElementById("locInd").value, ...common };
+        fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
       } else { // all
-        if(useUpload){
-          url = "/api/run_all_from_upload/" + uploadedFileId;
-          fetchOptions = { method:"POST" };
-        } else {
-          url = "/api/run_all";
-          body = {
-            res_location_key: document.getElementById("locResAll").value,
-            com_location_key: document.getElementById("locComAll").value,
-            ind_location_key: document.getElementById("locIndAll").value,
-            ...common
-          };
-          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
-        }
+        url = "/api/run_all";
+        body = {
+          res_location_key: document.getElementById("locResAll").value,
+          com_location_key: document.getElementById("locComAll").value,
+          ind_location_key: document.getElementById("locIndAll").value,
+          ...common
+        };
+        fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
       }
 
       const res = await fetch(url, fetchOptions);
@@ -747,7 +670,7 @@
       }
 
       if(mode === "all"){
-        setStatus(useUpload ? "Success (using uploaded CSV)." : "Success.", "ok");
+        setStatus("Success.", "ok");
       } else {
         const hasBaseline = Array.isArray(data.historical_baseline) && data.historical_baseline.some(v => v != null && !Number.isNaN(Number(v)));
         const src = data.baseline_source || "none";
