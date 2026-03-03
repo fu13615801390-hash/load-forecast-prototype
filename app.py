@@ -183,11 +183,32 @@ def _update_history(location_key: str, sector: str, predicted: list[float]):
         HISTORY_STORE[key] = HISTORY_STORE[key][-HISTORY_KEEP_LAST:]
 
 
-def _historical_baseline(location_key: str, sector: str, horizon: int) -> list[float] | None:
+def _historical_baseline(
+    location_key: str,
+    sector: str,
+    horizon: int,
+    current_predicted: list[float] | None = None,
+    min_diff: float = 1e-6,
+) -> list[float] | None:
     key = _history_key(location_key, sector)
     runs = HISTORY_STORE.get(key, [])
     if not runs:
         return None
+
+    # If current prediction is provided, drop prior runs that are effectively identical.
+    # This avoids plotting a "historical" line that is exactly the same as current.
+    if current_predicted:
+        filtered = []
+        for r in runs:
+            n = min(len(r), len(current_predicted), horizon)
+            if n == 0:
+                continue
+            max_abs_diff = max(abs(float(r[i]) - float(current_predicted[i])) for i in range(n))
+            if max_abs_diff > min_diff:
+                filtered.append(r)
+        runs = filtered
+        if not runs:
+            return None
 
     min_len = min(min(len(r) for r in runs), horizon)
     baseline = []
@@ -321,7 +342,9 @@ def api_forecast_res(req: ModelRequest):
         "location": label,
         "lat": lat,
         "lon": lon,
-        "historical_baseline": _historical_baseline(req.location_key, "res", 24),
+        "historical_baseline": _historical_baseline(
+            req.location_key, "res", 24, current_predicted=[round(float(v), 2) for v in yhat]
+        ),
     }
 
     # store history (use 24 horizon for ML)
@@ -340,7 +363,9 @@ def api_forecast_com(req: ModelRequest):
 
     sector = "com"
     out = mock_forecast(sector, w)
-    baseline = _historical_baseline(req.location_key, sector, req.horizon_hours)
+    baseline = _historical_baseline(
+        req.location_key, sector, req.horizon_hours, current_predicted=out["predicted_load"]
+    )
     _update_history(req.location_key, sector, out["predicted_load"])
 
     out["historical_baseline"] = baseline
@@ -361,7 +386,9 @@ def api_forecast_ind(req: ModelRequest):
 
     sector = "ind"
     out = mock_forecast(sector, w)
-    baseline = _historical_baseline(req.location_key, sector, req.horizon_hours)
+    baseline = _historical_baseline(
+        req.location_key, sector, req.horizon_hours, current_predicted=out["predicted_load"]
+    )
     _update_history(req.location_key, sector, out["predicted_load"])
 
     out["historical_baseline"] = baseline
@@ -391,7 +418,9 @@ def api_run_all(req: AllRequest):
         "unit": "kWh",
         "timestamps": res_ts,
         "predicted_load": [round(float(v), 2) for v in res_yhat],
-        "historical_baseline": _historical_baseline(req.res_location_key, "res", 24),
+        "historical_baseline": _historical_baseline(
+            req.res_location_key, "res", 24, current_predicted=[round(float(v), 2) for v in res_yhat]
+        ),
     }
     _update_history(req.res_location_key, "res", res_out["predicted_load"])
 
@@ -401,14 +430,18 @@ def api_run_all(req: AllRequest):
     com_label, com_lat, com_lon = resolve_preset(req.com_location_key)
     com_weather = mock_weather(com_label, com_lat, com_lon, start, req.horizon_hours)
     com_out = mock_forecast("com", com_weather)
-    com_out["historical_baseline"] = _historical_baseline(req.com_location_key, "com", req.horizon_hours)
+    com_out["historical_baseline"] = _historical_baseline(
+        req.com_location_key, "com", req.horizon_hours, current_predicted=com_out["predicted_load"]
+    )
     _update_history(req.com_location_key, "com", com_out["predicted_load"])
 
     # ---- Industrial (mock) ----
     ind_label, ind_lat, ind_lon = resolve_preset(req.ind_location_key)
     ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, req.horizon_hours)
     ind_out = mock_forecast("ind", ind_weather)
-    ind_out["historical_baseline"] = _historical_baseline(req.ind_location_key, "ind", req.horizon_hours)
+    ind_out["historical_baseline"] = _historical_baseline(
+        req.ind_location_key, "ind", req.horizon_hours, current_predicted=ind_out["predicted_load"]
+    )
     _update_history(req.ind_location_key, "ind", ind_out["predicted_load"])
 
     return {
