@@ -312,16 +312,18 @@
               <option value="live_api">Live API weather</option>
             </select>
           </div>
-          <div>
-            <label>Weather CSV for Residential run</label>
-            <input id="resWeatherFile" type="file" accept=".csv" />
-            <div class="hint">Columns: timestamp + temperature + humidity (accepted aliases supported).</div>
+          <div id="resUploadControls">
+            <div>
+              <label>Weather CSV for Residential run</label>
+              <input id="resWeatherFile" type="file" accept=".csv" />
+              <div class="hint">Columns: timestamp + temperature + humidity (accepted aliases supported).</div>
+            </div>
+            <div class="row2">
+              <button class="secondary" onclick="uploadResWeatherCSV()">Upload CSV</button>
+              <button class="secondary" onclick="clearResWeatherCSV()">Clear</button>
+            </div>
+            <div class="smallNote" id="resUploadInfo">No uploaded residential weather CSV.</div>
           </div>
-          <div class="row2">
-            <button class="secondary" onclick="uploadResWeatherCSV()">Upload CSV</button>
-            <button class="secondary" onclick="clearResWeatherCSV()">Clear</button>
-          </div>
-          <div class="smallNote" id="resUploadInfo">No uploaded residential weather CSV.</div>
         </div>
       </div>
 
@@ -446,10 +448,18 @@
     // output panels
     document.getElementById("singlePanel").classList.toggle("hidden", m === "all");
     document.getElementById("allPanel").classList.toggle("hidden", m !== "all");
+
+    updateResUploadUI();
   }
 
   document.getElementById("model").addEventListener("change", showHideByModel);
+  document.getElementById("resInputSource").addEventListener("change", updateResUploadUI);
   showHideByModel();
+
+  function updateResUploadUI(){
+    const source = document.getElementById("resInputSource").value;
+    document.getElementById("resUploadControls").classList.toggle("hidden", source !== "uploaded_csv");
+  }
 
   function toTableHTML(headers, rows, maxRows=28){
     const head = `<tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr>`;
