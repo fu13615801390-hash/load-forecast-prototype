@@ -60,6 +60,7 @@ PRESET_LOCATIONS = {
 }
 
 OPENWEATHER_CURRENT_URL = "https://api.openweathermap.org/data/2.5/weather"
+OPENWEATHER_FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
 
 
 # ----------------------------
@@ -98,12 +99,16 @@ def resolve_preset(key: str) -> tuple[str, float, float]:
     return p["label"], float(p["lat"]), float(p["lon"])
 
 
+def _openweather_api_key() -> str | None:
+    return os.getenv("OPENWEATHER_API_KEY") or os.getenv("OPENWEATHER_APPID")
+
+
 def _fetch_openweather_current(lat: float, lon: float) -> dict | None:
     """
     Fetch current weather snapshot from OpenWeather.
     Returns None if API key is missing or request fails.
     """
-    api_key = os.getenv("OPENWEATHER_API_KEY")
+    api_key = _openweather_api_key()
     if not api_key:
         return None
 
@@ -121,14 +126,67 @@ def _fetch_openweather_current(lat: float, lon: float) -> dict | None:
         return None
 
 
+def _fetch_openweather_forecast(lat: float, lon: float, start: datetime, horizon_hours: int) -> dict | None:
+    """
+    Fetch forecast from OpenWeather /forecast (3-hour steps) and map to hourly timestamps.
+    """
+    api_key = _openweather_api_key()
+    if not api_key:
+        return None
+
+    params = {"lat": lat, "lon": lon, "appid": api_key, "units": "metric"}
+    try:
+        res = requests.get(OPENWEATHER_FORECAST_URL, params=params, timeout=12)
+        res.raise_for_status()
+        data = res.json()
+        items = data.get("list", [])
+        if not items:
+            return None
+
+        pts = []
+        for it in items:
+            dt = datetime.fromtimestamp(int(it["dt"]))
+            temp = float(it["main"]["temp"])
+            hum = float(it["main"]["humidity"])
+            pts.append((dt, temp, hum))
+        if not pts:
+            return None
+
+        ts, temp, rh = [], [], []
+        for i in range(horizon_hours):
+            t = start + timedelta(hours=i)
+            # nearest-neighbor mapping from 3-hour forecast to hourly axis
+            nearest = min(pts, key=lambda p: abs((p[0] - t).total_seconds()))
+            ts.append(t.isoformat(timespec="minutes"))
+            temp.append(round(float(nearest[1]), 2))
+            rh.append(round(float(nearest[2]), 2))
+
+        return {
+            "module": "weather_openweather_forecast",
+            "location": "",
+            "lat": lat,
+            "lon": lon,
+            "timestamps": ts,
+            "temperature_C": temp,
+            "relative_humidity_pct": rh,
+        }
+    except Exception:
+        return None
+
+
 def mock_weather(location_label: str, lat: float, lon: float, start: datetime, horizon_hours: int):
     """
-    Demo-only weather. Later replace with real OpenWeather call using lat/lon.
+    Weather provider with automatic fallback order:
+    1) OpenWeather forecast (3h forecast mapped to hourly)
+    2) OpenWeather current snapshot (reused across horizon)
+    3) Synthetic mock weather
     """
-    # Toronto override: use live OpenWeather current conditions if available.
-    live = None
-    if location_label == "Toronto, ON":
-        live = _fetch_openweather_current(lat, lon)
+    live_forecast = _fetch_openweather_forecast(lat, lon, start, horizon_hours)
+    if live_forecast is not None:
+        live_forecast["location"] = location_label
+        return live_forecast
+
+    live = _fetch_openweather_current(lat, lon)
 
     ts, temp, rh = [], [], []
     for i in range(horizon_hours):
