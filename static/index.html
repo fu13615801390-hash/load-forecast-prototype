@@ -216,8 +216,7 @@
 <header>
   <h1>Load Forecast Web Interface (Prototype)</h1>
   <p>
-    Requirements enabled: hide/show location dropdowns by model, defaults (Res/Com Toronto; Ind Ontario),
-    Train-your-own UI + file input, and ALL mode shows 3 separate graphs.
+    Residential, Commercial, Industrial, and Train-your-own forecasting interface.
   </p>
 </header>
 
@@ -333,9 +332,6 @@
             <button onclick="trainModel()">Train Model</button>
             <button class="secondary" onclick="downloadCSV()">Download CSV</button>
           </div>
-          <div class="hint">
-            This is UI-ready. To make training actually run, you’ll add a backend endpoint like <code>/api/train</code>.
-          </div>
         </div>
       </div>
 
@@ -394,9 +390,6 @@
       </div>
     </div>
 
-    <div class="hint" style="margin-top:10px;">
-      If your backend doesn’t support training endpoint yet, the UI will show a clear error message.
-    </div>
   </main>
 </div>
 
