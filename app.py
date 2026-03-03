@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -7,6 +7,7 @@ import math
 import os
 import requests
 import pandas as pd
+import io
 
 app = FastAPI(title="Load Forecast Interface Prototype")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -608,4 +609,58 @@ def api_run_all(req: AllRequest):
         "residential": {"forecast": res_out, "weather": res_weather},
         "commercial": {"forecast": com_out, "weather": com_weather},
         "industrial": {"forecast": ind_out, "weather": ind_weather},
+    }
+
+
+@app.post("/api/train")
+async def api_train(file: UploadFile | None = File(default=None), notes: str | None = Form(default=None)):
+    """
+    Lightweight training endpoint to make Train UI functional.
+    This validates and inspects uploaded CSV; real model fitting can be added later.
+    """
+    notes_text = (notes or "").strip()
+
+    if file is None:
+        return {
+            "ok": True,
+            "module": "train_preview",
+            "message": "Train request received (no CSV uploaded).",
+            "trained": False,
+            "rows": 0,
+            "columns": [],
+            "numeric_columns": [],
+            "notes": notes_text,
+        }
+
+    if not str(file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Training file must be a .csv")
+
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Unable to read uploaded file: {e}")
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded CSV is empty.")
+
+    try:
+        df = pd.read_csv(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid CSV format: {e}")
+
+    if df.empty:
+        raise HTTPException(status_code=400, detail="Uploaded CSV has no rows.")
+
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+    return {
+        "ok": True,
+        "module": "train_preview",
+        "message": f"Training data accepted: {len(df)} rows, {len(df.columns)} columns.",
+        "trained": False,
+        "filename": file.filename,
+        "rows": int(len(df)),
+        "columns": [str(c) for c in df.columns],
+        "numeric_columns": [str(c) for c in numeric_cols],
+        "notes": notes_text,
     }

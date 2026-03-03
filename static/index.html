@@ -341,7 +341,7 @@
             <textarea id="trainNotes" placeholder="Describe features, model type, etc..."></textarea>
           </div>
           <div class="row2">
-            <button onclick="trainStub()">Train (placeholder)</button>
+            <button onclick="trainModel()">Train Model</button>
             <button class="secondary" onclick="downloadCSV()">Download CSV</button>
           </div>
           <div class="hint">
@@ -591,10 +591,35 @@
   }
 
   // --------------------
-  // Train placeholder
+  // Train
   // --------------------
-  function trainStub(){
-    setStatus("Train is UI-only right now. Add backend endpoint /api/train to run training.", "err");
+  async function trainModel(){
+    const fileInput = document.getElementById("trainDataFile");
+    const notes = document.getElementById("trainNotes").value || "";
+
+    const fd = new FormData();
+    if(fileInput.files && fileInput.files.length > 0){
+      fd.append("file", fileInput.files[0]);
+    }
+    fd.append("notes", notes);
+
+    setStatus("Submitting train request...");
+    try{
+      const res = await fetch("/api/train", { method: "POST", body: fd });
+      const data = await parseAPIResponse(res);
+      if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+
+      const rows = data.rows ?? 0;
+      const cols = Array.isArray(data.columns) ? data.columns.length : 0;
+      setStatus(data.message || `Train request accepted (${rows} rows, ${cols} columns).`, "ok");
+      setChips({
+        out: data.module || "train_preview",
+        loc: data.filename || "No file",
+        coords: `${rows} rows`
+      });
+    } catch(e){
+      setStatus("Train failed: " + e.message, "err");
+    }
   }
 
   // --------------------
@@ -605,7 +630,7 @@
     const common = getCommon();
 
     if(mode === "train"){
-      setStatus("Train mode selected. Use Train button (placeholder) or implement /api/train.", "err");
+      setStatus("Train mode selected. Use the Train Model button.", "ok");
       return;
     }
 
