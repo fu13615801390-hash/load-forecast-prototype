@@ -9,6 +9,8 @@ import requests
 import pandas as pd
 import io
 import glob
+import numpy as np
+import joblib
 
 app = FastAPI(title="Load Forecast Interface Prototype")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -445,6 +447,91 @@ def _ml_predict_residential_24h(window_rows: list[dict]) -> list[float]:
         raise HTTPException(status_code=500, detail=f"ML prediction failed: {e}")
 
 
+def _build_train_dataframe(df: pd.DataFrame):
+    """
+    Build supervised train frame from uploaded CSV.
+    Supports:
+      - timestamp-style columns OR Date+Hour columns
+      - common load target column names
+      - optional weather columns (temp/humidity/dewpoint)
+    """
+    target_col = _find_first_col(
+        df,
+        [
+            "Total Consumption (kWh)",
+            "total_consumption_kwh",
+            "consumption_kwh",
+            "predicted_load",
+            "load",
+            "actual_load",
+            "demand",
+            "kwh",
+            "kw",
+        ],
+    )
+    if target_col is None:
+        raise ValueError("Could not find load target column (e.g. Total Consumption (kWh), load, kwh).")
+
+    ts_col = _find_first_col(df, ["timestamp", "datetime", "dt", "time"])
+    date_col = _find_first_col(df, ["Date", "date"])
+    hour_col = _find_first_col(df, ["Hour", "hour", "hour_ending", "he"])
+
+    work = df.copy()
+    if ts_col is not None:
+        work["dt"] = pd.to_datetime(work[ts_col], errors="coerce")
+    elif date_col is not None and hour_col is not None:
+        work[hour_col] = pd.to_numeric(work[hour_col], errors="coerce")
+        work["dt"] = pd.to_datetime(
+            work[date_col].astype(str) + " " + (work[hour_col].astype("Int64") - 1).astype(str) + ":00",
+            errors="coerce",
+        )
+    else:
+        raise ValueError("Need timestamp column or Date+Hour columns in training CSV.")
+
+    work[target_col] = pd.to_numeric(work[target_col], errors="coerce")
+    work = work.dropna(subset=["dt", target_col]).sort_values("dt").reset_index(drop=True)
+    if len(work) < 96:
+        raise ValueError("Need at least 96 clean hourly rows to train.")
+
+    # Time/calendar features
+    work["hour"] = work["dt"].dt.hour
+    work["dow"] = work["dt"].dt.dayofweek
+    work["month"] = work["dt"].dt.month
+    work["is_weekend"] = work["dow"].isin([5, 6]).astype(int)
+    work["hour_sin"] = np.sin(2 * np.pi * work["hour"] / 24.0)
+    work["hour_cos"] = np.cos(2 * np.pi * work["hour"] / 24.0)
+
+    # Lag features from target
+    work["lag_1h"] = work[target_col].shift(1)
+    work["lag_24h"] = work[target_col].shift(24)
+
+    # Optional weather features if present in same CSV
+    temp_col = _find_first_col(work, ["temperature_C", "temp_c", "temp", "temperature"])
+    hum_col = _find_first_col(work, ["relative_humidity_pct", "humidity_percent", "humidity", "rh"])
+    dew_col = _find_first_col(work, ["dewpoint", "dew_point", "dewpoint_c"])
+
+    feature_cols = ["hour_sin", "hour_cos", "dow", "month", "is_weekend", "lag_1h", "lag_24h"]
+
+    if temp_col is not None:
+        work[temp_col] = pd.to_numeric(work[temp_col], errors="coerce")
+        work["hdd"] = (18.0 - work[temp_col]).clip(lower=0.0)
+        feature_cols += [temp_col, "hdd"]
+    if hum_col is not None:
+        work[hum_col] = pd.to_numeric(work[hum_col], errors="coerce")
+        feature_cols.append(hum_col)
+    if dew_col is not None:
+        work[dew_col] = pd.to_numeric(work[dew_col], errors="coerce")
+        feature_cols.append(dew_col)
+
+    work = work.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
+    if len(work) < 72:
+        raise ValueError("Not enough rows after feature building (need >= 72).")
+
+    X = work[feature_cols].astype(float)
+    y = work[target_col].astype(float)
+    return work, X, y, feature_cols, target_col
+
+
 # ----------------------------
 # Debug endpoints (VERY useful on Azure)
 # ----------------------------
@@ -676,22 +763,13 @@ def api_run_all(req: AllRequest):
 @app.post("/api/train")
 async def api_train(file: UploadFile | None = File(default=None), notes: str | None = Form(default=None)):
     """
-    Lightweight training endpoint to make Train UI functional.
-    This validates and inspects uploaded CSV; real model fitting can be added later.
+    Train a practical residential load model from uploaded CSV and return metrics.
+    This does not overwrite your LSTM artifacts; it saves a separate user model artifact.
     """
     notes_text = (notes or "").strip()
 
     if file is None:
-        return {
-            "ok": True,
-            "module": "train_preview",
-            "message": "Train request received (no CSV uploaded).",
-            "trained": False,
-            "rows": 0,
-            "columns": [],
-            "numeric_columns": [],
-            "notes": notes_text,
-        }
+        raise HTTPException(status_code=400, detail="Please upload a training CSV file.")
 
     if not str(file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Training file must be a .csv")
@@ -712,16 +790,67 @@ async def api_train(file: UploadFile | None = File(default=None), notes: str | N
     if df.empty:
         raise HTTPException(status_code=400, detail="Uploaded CSV has no rows.")
 
-    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    try:
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"scikit-learn not available: {e}")
+
+    try:
+        work, X, y, feature_cols, target_col = _build_train_dataframe(df)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Training data prep failed: {e}")
+
+    split_idx = int(len(X) * 0.8)
+    if split_idx < 24 or (len(X) - split_idx) < 12:
+        raise HTTPException(status_code=400, detail="Dataset too small for train/validation split.")
+
+    X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
+    y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
+
+    model = RandomForestRegressor(
+        n_estimators=300,
+        max_depth=14,
+        random_state=42,
+        n_jobs=-1,
+    )
+    model.fit(X_train, y_train)
+    pred = model.predict(X_val)
+
+    mae = float(mean_absolute_error(y_val, pred))
+    rmse = float(np.sqrt(mean_squared_error(y_val, pred)))
+    r2 = float(r2_score(y_val, pred))
+
+    model_payload = {
+        "model_type": "RandomForestRegressor",
+        "target_col": target_col,
+        "feature_cols": feature_cols,
+        "trained_at": datetime.now().isoformat(timespec="seconds"),
+        "notes": notes_text,
+        "model": model,
+    }
+    model_dir = os.path.join("models", "trained")
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = os.path.join(model_dir, "user_res_model.joblib")
+    joblib.dump(model_payload, model_path)
 
     return {
         "ok": True,
-        "module": "train_preview",
-        "message": f"Training data accepted: {len(df)} rows, {len(df.columns)} columns.",
-        "trained": False,
+        "module": "train_res_model",
+        "message": "Training completed.",
+        "trained": True,
         "filename": file.filename,
-        "rows": int(len(df)),
+        "rows": int(len(work)),
         "columns": [str(c) for c in df.columns],
-        "numeric_columns": [str(c) for c in numeric_cols],
+        "feature_columns": [str(c) for c in feature_cols],
+        "target_column": str(target_col),
+        "train_rows": int(len(X_train)),
+        "val_rows": int(len(X_val)),
+        "metrics": {
+            "mae": round(mae, 4),
+            "rmse": round(rmse, 4),
+            "r2": round(r2, 4),
+        },
+        "model_path": model_path,
         "notes": notes_text,
     }
