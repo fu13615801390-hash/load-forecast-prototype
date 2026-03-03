@@ -705,7 +705,17 @@
         renderSingle(mode, data);
       }
 
-      setStatus(useUpload ? "Success (using uploaded CSV)." : "Success.", "ok");
+      if(mode === "all"){
+        setStatus(useUpload ? "Success (using uploaded CSV)." : "Success.", "ok");
+      } else {
+        const hasBaseline = Array.isArray(data.historical_baseline) && data.historical_baseline.some(v => v != null && !Number.isNaN(Number(v)));
+        const src = data.baseline_source || "none";
+        if(hasBaseline){
+          setStatus(`Success. Baseline source: ${src}.`, "ok");
+        } else {
+          setStatus(`Success, but no historical baseline found (source: ${src}).`, "err");
+        }
+      }
     } catch(e){
       setStatus("Failed: " + e.message, "err");
     } finally {

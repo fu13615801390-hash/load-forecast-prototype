@@ -8,6 +8,7 @@ import os
 import requests
 import pandas as pd
 import io
+import glob
 
 app = FastAPI(title="Load Forecast Interface Prototype")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -23,6 +24,7 @@ RESIDENTIAL_BASELINE_CSV = os.getenv(
     "RESIDENTIAL_BASELINE_CSV",
     r"c:\Users\14184\Downloads\BV06 - Residential Energy Consumption Data (2020-2024) - Jan. 2020.csv",
 )
+LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
 
 
 @app.get("/")
@@ -295,27 +297,69 @@ def _historical_baseline_from_residential_csv(target_timestamps: list[str]) -> l
       - Hour (1-24)
       - Total Consumption (kWh)
     """
-    if not os.path.isfile(RESIDENTIAL_BASELINE_CSV):
+    global LAST_RESIDENTIAL_BASELINE_PATH
+
+    candidate_paths: list[str] = []
+
+    env_candidates = (os.getenv("RESIDENTIAL_BASELINE_CSVS") or "").strip()
+    if env_candidates:
+        candidate_paths.extend([p.strip() for p in env_candidates.split(";") if p.strip()])
+
+    candidate_paths.append(RESIDENTIAL_BASELINE_CSV)
+    candidate_paths.extend(glob.glob("data/*Residential*Energy*Consumption*.csv"))
+    candidate_paths.extend(glob.glob("data/*residential*.csv"))
+
+    user_profile = os.getenv("USERPROFILE")
+    if user_profile:
+        candidate_paths.extend(glob.glob(os.path.join(user_profile, "Downloads", "*Residential*Energy*Consumption*.csv")))
+        candidate_paths.extend(glob.glob(os.path.join(user_profile, "Downloads", "*residential*.csv")))
+
+    csv_path = next((p for p in candidate_paths if p and os.path.isfile(p)), None)
+    if not csv_path:
+        LAST_RESIDENTIAL_BASELINE_PATH = None
         return None
 
     try:
-        df = pd.read_csv(RESIDENTIAL_BASELINE_CSV)
+        df = pd.read_csv(csv_path)
     except Exception:
+        LAST_RESIDENTIAL_BASELINE_PATH = csv_path
         return None
 
-    required = ["Date", "Hour", "Total Consumption (kWh)"]
-    if not all(c in df.columns for c in required):
+    date_col = _find_first_col(df, ["Date", "date"])
+    hour_col = _find_first_col(df, ["Hour", "hour", "hour_ending", "he"])
+    load_col = _find_first_col(
+        df,
+        [
+            "Total Consumption (kWh)",
+            "total_consumption_kwh",
+            "consumption_kwh",
+            "load",
+            "demand",
+            "kwh",
+            "kw",
+        ],
+    )
+    if date_col is None or hour_col is None or load_col is None:
+        LAST_RESIDENTIAL_BASELINE_PATH = csv_path
         return None
 
     temp = df.copy()
-    temp["Hour"] = pd.to_numeric(temp["Hour"], errors="coerce")
-    temp["Total Consumption (kWh)"] = pd.to_numeric(temp["Total Consumption (kWh)"], errors="coerce")
+    type_col = _find_first_col(temp, ["Type", "type", "Sector", "sector"])
+    if type_col is not None:
+        temp = temp[temp[type_col].astype(str).str.lower() == "residential"]
+        if temp.empty:
+            LAST_RESIDENTIAL_BASELINE_PATH = csv_path
+            return None
+
+    temp[hour_col] = pd.to_numeric(temp[hour_col], errors="coerce")
+    temp[load_col] = pd.to_numeric(temp[load_col], errors="coerce")
     temp["dt"] = pd.to_datetime(
-        temp["Date"].astype(str) + " " + (temp["Hour"].astype("Int64") - 1).astype(str) + ":00",
+        temp[date_col].astype(str) + " " + (temp[hour_col].astype("Int64") - 1).astype(str) + ":00",
         errors="coerce",
     )
-    temp = temp.dropna(subset=["dt", "Total Consumption (kWh)"])
+    temp = temp.dropna(subset=["dt", load_col])
     if temp.empty:
+        LAST_RESIDENTIAL_BASELINE_PATH = csv_path
         return None
 
     temp["hour"] = temp["dt"].dt.hour
@@ -336,10 +380,12 @@ def _historical_baseline_from_residential_csv(target_timestamps: list[str]) -> l
         if subset.empty:
             baseline.append(float("nan"))
         else:
-            baseline.append(float(subset["Total Consumption (kWh)"].mean()))
+            baseline.append(float(subset[load_col].mean()))
 
     if all(pd.isna(v) for v in baseline):
+        LAST_RESIDENTIAL_BASELINE_PATH = csv_path
         return None
+    LAST_RESIDENTIAL_BASELINE_PATH = csv_path
     return [round(float(v), 2) if not pd.isna(v) else None for v in baseline]  # type: ignore[list-item]
 
 
@@ -466,15 +512,19 @@ def api_forecast_res(req: ModelRequest):
         "lon": lon,
         "historical_baseline": _historical_baseline_from_residential_csv(ts),
         "baseline_source": "residential_csv",
+        "baseline_source_path": LAST_RESIDENTIAL_BASELINE_PATH,
     }
     if out["historical_baseline"] is None:
         out["historical_baseline"] = _historical_baseline_from_actual_csv(req.location_key, "res", ts)
         out["baseline_source"] = "actual_history_csv"
+        out["baseline_source_path"] = HISTORICAL_LOAD_CSV if out["historical_baseline"] is not None else None
     if out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
         out["historical_baseline"] = _historical_baseline(req.location_key, "res", 24)
         out["baseline_source"] = "prediction_history_fallback"
+        out["baseline_source_path"] = None
     if out["historical_baseline"] is None:
         out["baseline_source"] = "none"
+        out["baseline_source_path"] = None
 
     # store history (use 24 horizon for ML)
     _update_history(req.location_key, "res", out["predicted_load"])
@@ -559,15 +609,19 @@ def api_run_all(req: AllRequest):
         "predicted_load": [round(float(v), 2) for v in res_yhat],
         "historical_baseline": _historical_baseline_from_residential_csv(res_ts),
         "baseline_source": "residential_csv",
+        "baseline_source_path": LAST_RESIDENTIAL_BASELINE_PATH,
     }
     if res_out["historical_baseline"] is None:
         res_out["historical_baseline"] = _historical_baseline_from_actual_csv(req.res_location_key, "res", res_ts)
         res_out["baseline_source"] = "actual_history_csv"
+        res_out["baseline_source_path"] = HISTORICAL_LOAD_CSV if res_out["historical_baseline"] is not None else None
     if res_out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
         res_out["historical_baseline"] = _historical_baseline(req.res_location_key, "res", 24)
         res_out["baseline_source"] = "prediction_history_fallback"
+        res_out["baseline_source_path"] = None
     if res_out["historical_baseline"] is None:
         res_out["baseline_source"] = "none"
+        res_out["baseline_source_path"] = None
     _update_history(req.res_location_key, "res", res_out["predicted_load"])
 
     res_weather = mock_weather(res_label, res_lat, res_lon, start, req.horizon_hours)
