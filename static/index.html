@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Load Forecast Web Interface (Prototype)</title>
+
+  <!-- Chart.js + time adapter (needed for time scale) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
+
+  <style>
+    :root{
+      --bg:#ffffff;
+      --panel:#ffffff;
+      --border:#e6e8ee;
+      --text:#111827;
+      --muted:#6b7280;
+      --shadow: 0 10px 30px rgba(17, 24, 39, .08);
+      --radius: 16px;
+      --danger:#b42318;
+      --ok:#067647;
+      --btn:#111827;
+    }
+    *{ box-sizing: border-box; }
+    body{
+      margin:0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      background: #f6f7fb;
+      color: var(--text);
+    }
+    header{
+      max-width: 1250px;
+      margin: 0 auto;
+      padding: 22px 22px 10px;
+    }
+    header h1{
+      margin:0;
+      font-size: 20px;
+    }
+    header p{
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+      max-width: 980px;
+    }
+
+    .wrap{
+      max-width: 1250px;
+      margin: 0 auto;
+      padding: 14px 22px 24px;
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 980px){
+      .wrap{ grid-template-columns: 1fr; }
+    }
+
+    .card{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+
+    .sidebar{
+      position: sticky;
+      top: 14px;
+      height: fit-content;
+    }
+
+    .sectionTitle{
+      font-size: 12px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 14px 0 10px;
+    }
+
+    label{
+      display:block;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    select, input, textarea, button{
+      width:100%;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+    textarea{
+      min-height: 92px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12.5px;
+      line-height: 1.35;
+    }
+    .row{ display:grid; gap: 10px; }
+    .row2{ display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+    .hint{
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+
+    .btnRow{
+      display:flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    button{
+      cursor:pointer;
+      border: 1px solid #cfe0ff;
+      background: var(--btn);
+      color: #fff;
+    }
+    button.secondary{
+      border-color: var(--border);
+      background: #fff;
+      color: var(--text);
+    }
+    button:disabled{ opacity: .6; cursor: not-allowed; }
+
+    .status{
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .status.err{ color: var(--danger); }
+    .status.ok{ color: var(--ok); }
+
+    .mainTop{
+      display:flex;
+      flex-wrap: wrap;
+      align-items:center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .chip{
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #fafafa;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .chip b{ color: var(--text); font-weight: 600; }
+
+    .panel{
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 14px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    /* Keep a fixed chart area and let canvas fill it without distortion */
+    .chartWrap{
+      position: relative;
+      width: 100%;
+      height: 340px;
+    }
+    .chartWrap.single{
+      height: 520px;
+    }
+    .chartCanvas{
+      display: block;
+      max-width: 100%;
+    }
+
+    table{
+      width:100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      overflow:hidden;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    th, td{
+      padding: 9px 10px;
+      border-bottom: 1px solid #eef0f5;
+      font-size: 12.5px;
+      text-align:left;
+      vertical-align: top;
+    }
+    th{
+      color: var(--muted);
+      font-weight: 600;
+      background: #fafafa;
+    }
+    tr:last-child td{ border-bottom: none; }
+
+    .hidden{ display:none !important; }
+    .smallNote{ font-size:12px; color:var(--muted); margin-top:6px; }
+    .fileRow{ display:grid; gap:8px; }
+  </style>
+</head>
+
+<body>
+<header>
+  <h1>Load Forecast Web Interface (Prototype)</h1>
+  <p>
+    Requirements enabled: hide/show location dropdowns by model, defaults (Res/Com Toronto; Ind Ontario),
+    Train-your-own UI + file input, CSV upload, and ALL mode shows 3 separate graphs.
+  </p>
+</header>
+
+<div class="wrap">
+  <!-- LEFT: Controls -->
+  <aside class="card sidebar">
+    <div class="sectionTitle">User Options</div>
+
+    <div class="row">
+      <div>
+        <label>Model</label>
+        <select id="model">
+          <option value="res">Residential</option>
+          <option value="com">Commercial</option>
+          <option value="ind">Industrial</option>
+          <option value="all">Run ALL (3 graphs)</option>
+          <option value="train">Train your own model</option>
+        </select>
+      </div>
+
+      <!-- Locations (hide/show depending on model) -->
+      <div id="resLocBox">
+        <label>Residential Location</label>
+        <select id="locRes">
+          <option value="toronto" selected>Toronto, ON</option>
+          <option value="ontario">Ontario (Ottawa)</option>
+          <option value="alberta">Alberta (Edmonton)</option>
+          <option value="vancouver">Vancouver, BC</option>
+        </select>
+      </div>
+
+      <div id="comLocBox" class="hidden">
+        <label>Commercial Location</label>
+        <select id="locCom">
+          <option value="toronto" selected>Toronto, ON</option>
+          <option value="ontario">Ontario (Ottawa)</option>
+          <option value="alberta">Alberta (Edmonton)</option>
+          <option value="vancouver">Vancouver, BC</option>
+        </select>
+      </div>
+
+      <div id="indLocBox" class="hidden">
+        <label>Industrial Location</label>
+        <select id="locInd">
+          <option value="ontario" selected>Ontario (Ottawa)</option>
+          <option value="alberta">Alberta (Edmonton)</option>
+          <option value="toronto">Toronto, ON</option>
+          <option value="vancouver">Vancouver, BC</option>
+        </select>
+      </div>
+
+      <div id="allLocBox" class="hidden">
+        <div class="smallNote"><b>ALL mode:</b> choose each location below.</div>
+        <div class="row">
+          <div>
+            <label>Residential Location</label>
+            <select id="locResAll">
+              <option value="toronto" selected>Toronto, ON</option>
+              <option value="ontario">Ontario (Ottawa)</option>
+              <option value="alberta">Alberta (Edmonton)</option>
+              <option value="vancouver">Vancouver, BC</option>
+            </select>
+          </div>
+          <div>
+            <label>Commercial Location</label>
+            <select id="locComAll">
+              <option value="toronto" selected>Toronto, ON</option>
+              <option value="ontario">Ontario (Ottawa)</option>
+              <option value="alberta">Alberta (Edmonton)</option>
+              <option value="vancouver">Vancouver, BC</option>
+            </select>
+          </div>
+          <div>
+            <label>Industrial Location</label>
+            <select id="locIndAll">
+              <option value="ontario" selected>Ontario (Ottawa)</option>
+              <option value="alberta">Alberta (Edmonton)</option>
+              <option value="toronto">Toronto, ON</option>
+              <option value="vancouver">Vancouver, BC</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="row2">
+        <div>
+          <label>Start time (optional)</label>
+          <input id="start" type="datetime-local" />
+        </div>
+        <div>
+          <label>Horizon (hours)</label>
+          <input id="horizon" type="number" min="1" max="168" value="24" />
+        </div>
+      </div>
+
+      <!-- CSV Upload -->
+      <div class="sectionTitle">Upload (CSV)</div>
+      <div class="fileRow">
+        <div>
+          <label>Weather CSV (timestamp, temperature_C, relative_humidity_pct)</label>
+          <input id="csvFile" type="file" accept=".csv" />
+          <div class="hint">Uploads to backend endpoint <code>/api/upload/weather_csv</code>.</div>
+        </div>
+        <div class="row2">
+          <button class="secondary" onclick="uploadCSV()">Upload CSV</button>
+          <button class="secondary" onclick="clearUpload()">Clear</button>
+        </div>
+        <div class="smallNote" id="uploadInfo">No uploaded file.</div>
+      </div>
+
+      <!-- Train Your Own Model -->
+      <div id="trainBox" class="hidden">
+        <div class="sectionTitle">Train your own model</div>
+        <div class="fileRow">
+          <div>
+            <label>Training data CSV (optional)</label>
+            <input id="trainDataFile" type="file" accept=".csv" />
+          </div>
+          <div>
+            <label>Notes / Parameters (optional)</label>
+            <textarea id="trainNotes" placeholder="Describe features, model type, etc..."></textarea>
+          </div>
+          <div class="row2">
+            <button onclick="trainStub()">Train (placeholder)</button>
+            <button class="secondary" onclick="downloadCSV()">Download CSV</button>
+          </div>
+          <div class="hint">
+            This is UI-ready. To make training actually run, you’ll add a backend endpoint like <code>/api/train</code>.
+          </div>
+        </div>
+      </div>
+
+      <div class="btnRow">
+        <button id="runBtn" onclick="run()">Run</button>
+        <button class="secondary" onclick="downloadCSV()">Download CSV</button>
+      </div>
+
+      <div id="status" class="status">Ready.</div>
+      <div class="hint">
+        Chart uses time scale + autoskip ticks. If labels still feel busy, lower <b>maxTicksLimit</b>.
+      </div>
+    </div>
+  </aside>
+
+  <!-- RIGHT: Output -->
+  <main class="card">
+    <div class="mainTop">
+      <div class="chip"><b>Output:</b> <span id="chipOut">—</span></div>
+      <div class="chip"><b>Location:</b> <span id="chipLoc">—</span></div>
+      <div class="chip"><b>Coords:</b> <span id="chipCoords">—</span></div>
+    </div>
+
+    <!-- Single chart panel -->
+    <div id="singlePanel" class="panel">
+      <div class="chartWrap single">
+        <canvas id="chartSingle" class="chartCanvas"></canvas>
+      </div>
+      <div id="tableSingle"></div>
+    </div>
+
+    <!-- ALL charts panel (3 separate graphs) -->
+    <div id="allPanel" class="hidden">
+      <div class="panel">
+        <div class="smallNote"><b>Residential</b></div>
+        <div class="chartWrap">
+          <canvas id="chartRes" class="chartCanvas"></canvas>
+        </div>
+        <div id="tableRes"></div>
+      </div>
+
+      <div class="panel">
+        <div class="smallNote"><b>Commercial</b></div>
+        <div class="chartWrap">
+          <canvas id="chartCom" class="chartCanvas"></canvas>
+        </div>
+        <div id="tableCom"></div>
+      </div>
+
+      <div class="panel">
+        <div class="smallNote"><b>Industrial</b></div>
+        <div class="chartWrap">
+          <canvas id="chartInd" class="chartCanvas"></canvas>
+        </div>
+        <div id="tableInd"></div>
+      </div>
+    </div>
+
+    <div class="hint" style="margin-top:10px;">
+      If your backend doesn’t support upload/train endpoints yet, the UI will show a clear error message.
+    </div>
+  </main>
+</div>
+
+<script>
+  // --------------------
+  // State
+  // --------------------
+  let charts = {};            // map canvasId -> Chart instance
+  let lastResult = null;      // { mode, data }
+  let uploadedFileId = null;  // from /api/upload/weather_csv
+
+  // --------------------
+  // UI helpers
+  // --------------------
+  function setStatus(msg, type="muted"){
+    const el = document.getElementById("status");
+    el.textContent = msg;
+    el.className = "status" + (type==="err" ? " err" : (type==="ok" ? " ok" : ""));
+  }
+
+  function setChips({out="—", loc="—", coords="—"}){
+    document.getElementById("chipOut").textContent = out;
+    document.getElementById("chipLoc").textContent = loc;
+    document.getElementById("chipCoords").textContent = coords;
+  }
+
+  function showHideByModel(){
+    const m = document.getElementById("model").value;
+
+    // location blocks
+    document.getElementById("resLocBox").classList.toggle("hidden", m !== "res");
+    document.getElementById("comLocBox").classList.toggle("hidden", m !== "com");
+    document.getElementById("indLocBox").classList.toggle("hidden", m !== "ind");
+    document.getElementById("allLocBox").classList.toggle("hidden", m !== "all");
+
+    // train
+    document.getElementById("trainBox").classList.toggle("hidden", m !== "train");
+
+    // output panels
+    document.getElementById("singlePanel").classList.toggle("hidden", m === "all");
+    document.getElementById("allPanel").classList.toggle("hidden", m !== "all");
+  }
+
+  document.getElementById("model").addEventListener("change", showHideByModel);
+  showHideByModel();
+
+  function toTableHTML(headers, rows, maxRows=28){
+    const head = `<tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr>`;
+    const body = rows.slice(0, maxRows).map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("");
+    return `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  }
+
+  function destroyChart(canvasId){
+    if(charts[canvasId]){
+      charts[canvasId].destroy();
+      delete charts[canvasId];
+    }
+  }
+
+  // Time-scale plot (fixed: type:"time")
+  function plotISOTime(canvasId, isoTimestamps, datasets, maxTicks=5, unit=""){
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext("2d");
+    destroyChart(canvasId);
+
+    const pointsDatasets = datasets.map(ds => ({
+      label: ds.label,
+      data: isoTimestamps.map((t, i) => ({ x: new Date(t), y: ds.data[i] })),
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.35
+    }));
+
+    charts[canvasId] = new Chart(ctx, {
+      type: "line",
+      data: { datasets: pointsDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        devicePixelRatio: Math.max(1, Math.min(2, window.devicePixelRatio || 1)),
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: true, labels: { font: { size: 14 } } },
+          tooltip: {
+            titleFont: { size: 14 },
+            bodyFont: { size: 14 },
+            callbacks: {
+              label: (ctx) => {
+                const val = ctx.parsed && ctx.parsed.y != null ? ctx.parsed.y : "";
+                return `${ctx.dataset.label}: ${val}${unit ? " " + unit : ""}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            type: "time",
+            time: { unit: "hour", displayFormats: { hour: "MM-dd HH:mm" } },
+            ticks: {
+              autoSkip: true,
+              maxTicksLimit: maxTicks,
+              maxRotation: 0,
+              minRotation: 0,
+              font: { size: 12 }
+            }
+          },
+          y: {
+            title: {
+              display: !!unit,
+              text: unit
+            },
+            ticks: { precision: 0, font: { size: 12 } }
+          }
+        }
+      }
+    });
+
+    // Ensure final canvas metrics are synced after layout settles.
+    requestAnimationFrame(() => {
+      if (charts[canvasId]) charts[canvasId].resize();
+    });
+  }
+
+  function getCommon(){
+    return {
+      start_iso: document.getElementById("start").value || null,
+      horizon_hours: parseInt(document.getElementById("horizon").value, 10)
+    };
+  }
+
+  // --------------------
+  // CSV upload
+  // --------------------
+  async function uploadCSV(){
+    const fileInput = document.getElementById("csvFile");
+    if(!fileInput.files || fileInput.files.length === 0){
+      setStatus("Please choose a CSV file first.", "err");
+      return;
+    }
+
+    const fd = new FormData();
+    fd.append("file", fileInput.files[0]);
+
+    setStatus("Uploading CSV...");
+    try{
+      const res = await fetch("/api/upload/weather_csv", { method:"POST", body: fd });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+
+      uploadedFileId = data.file_id;
+      document.getElementById("uploadInfo").textContent =
+        `Uploaded: ${data.filename} | rows=${data.rows} | file_id=${data.file_id.slice(0,8)}...`;
+
+      setStatus("CSV uploaded successfully.", "ok");
+    } catch(e){
+      setStatus("Upload failed: " + e.message + " (Backend endpoint missing or error)", "err");
+    }
+  }
+
+  function clearUpload(){
+    uploadedFileId = null;
+    document.getElementById("csvFile").value = "";
+    document.getElementById("uploadInfo").textContent = "No uploaded file.";
+    setStatus("Upload cleared.", "ok");
+  }
+
+  // --------------------
+  // Train placeholder
+  // --------------------
+  function trainStub(){
+    setStatus("Train is UI-only right now. Add backend endpoint /api/train to run training.", "err");
+  }
+
+  // --------------------
+  // Run
+  // --------------------
+  async function run(){
+    const mode = document.getElementById("model").value;
+    const common = getCommon();
+
+    if(mode === "train"){
+      setStatus("Train mode selected. Use Train button (placeholder) or implement /api/train.", "err");
+      return;
+    }
+
+    document.getElementById("runBtn").disabled = true;
+    setStatus("Running...");
+
+    try{
+      let url, body, fetchOptions;
+
+      // If user uploaded CSV and wants to use it:
+      // - We auto-use upload endpoints when a file_id exists and mode is res/com/ind/all
+      // - If upload endpoints don't exist in backend, UI shows a clear error
+      const useUpload = !!uploadedFileId;
+
+      if(mode === "res"){
+        if(useUpload){
+          url = "/api/forecast/res_from_upload/" + uploadedFileId;
+          fetchOptions = { method:"POST" };
+        } else {
+          url = "/api/forecast/res";
+          body = { location_key: document.getElementById("locRes").value, ...common };
+          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        }
+      } else if(mode === "com"){
+        if(useUpload){
+          url = "/api/forecast/com_from_upload/" + uploadedFileId;
+          fetchOptions = { method:"POST" };
+        } else {
+          url = "/api/forecast/com";
+          body = { location_key: document.getElementById("locCom").value, ...common };
+          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        }
+      } else if(mode === "ind"){
+        if(useUpload){
+          url = "/api/forecast/ind_from_upload/" + uploadedFileId;
+          fetchOptions = { method:"POST" };
+        } else {
+          url = "/api/forecast/ind";
+          body = { location_key: document.getElementById("locInd").value, ...common };
+          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        }
+      } else { // all
+        if(useUpload){
+          url = "/api/run_all_from_upload/" + uploadedFileId;
+          fetchOptions = { method:"POST" };
+        } else {
+          url = "/api/run_all";
+          body = {
+            res_location_key: document.getElementById("locResAll").value,
+            com_location_key: document.getElementById("locComAll").value,
+            ind_location_key: document.getElementById("locIndAll").value,
+            ...common
+          };
+          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        }
+      }
+
+      const res = await fetch(url, fetchOptions);
+      const data = await res.json();
+      if(!res.ok || data.error) throw new Error(data.detail || data.error || ("HTTP " + res.status));
+      lastResult = { mode, data };
+
+      if(mode === "all"){
+        // Support BOTH shapes:
+        // A) Your newer backend shape: {residential:{forecast,weather}, commercial:{...}, industrial:{...}}
+        // B) Older upload-all shape: {residential, commercial, industrial} direct forecasts (rare)
+        const bundle = normalizeAllPayload(data);
+
+        renderAll(bundle);
+        setChips({ out: "pipeline_all", loc: "Multiple", coords: "—" });
+      } else {
+        renderSingle(mode, data);
+      }
+
+      setStatus(useUpload ? "Success (using uploaded CSV)." : "Success.", "ok");
+    } catch(e){
+      setStatus("Failed: " + e.message, "err");
+    } finally {
+      document.getElementById("runBtn").disabled = false;
+    }
+  }
+
+  function normalizeAllPayload(data){
+    // If it already has residential.forecast:
+    if(data && data.residential && data.residential.forecast) return data;
+
+    // If it returns {residential: forecastObj, commercial: forecastObj, industrial: forecastObj}
+    if(data && data.residential && data.residential.predicted_load){
+      return {
+        residential: { forecast: data.residential, weather: { location:"uploaded_csv", lat:"", lon:"" } },
+        commercial: { forecast: data.commercial,  weather: { location:"uploaded_csv", lat:"", lon:"" } },
+        industrial: { forecast: data.industrial,  weather: { location:"uploaded_csv", lat:"", lon:"" } },
+      };
+    }
+
+    // If it returns older keys like {residential, ci} — fallback
+    throw new Error("Unexpected ALL payload shape. Update backend to return residential/commercial/industrial bundle.");
+  }
+
+  function renderSingle(mode, data){
+    // Single chart goes in chartSingle
+    const datasets = [{ label: "Forecast (current)", data: data.predicted_load }];
+    if(data.historical_baseline && Array.isArray(data.historical_baseline)){
+      datasets.push({ label: "Historical baseline", data: data.historical_baseline });
+    }
+
+    plotISOTime("chartSingle", data.timestamps, datasets, 5, data.unit || "");
+
+    const rows = data.timestamps.map((t, idx) => ([
+      t.replace("T"," "),
+      data.predicted_load[idx],
+      (data.historical_baseline && Array.isArray(data.historical_baseline)) ? data.historical_baseline[idx] : ""
+    ]));
+
+    document.getElementById("tableSingle").innerHTML = toTableHTML(
+      ["Time", `Current${data.unit ? ` (${data.unit})` : ""}`, `Baseline${data.unit ? ` (${data.unit})` : ""}`],
+      rows
+    );
+
+    setChips({
+      out: data.module || ("forecast_" + mode),
+      loc: data.location || "",
+      coords: (data.lat != null && data.lon != null) ? `${data.lat}, ${data.lon}` : "—"
+    });
+  }
+
+  function renderAll(bundle){
+    const r = bundle.residential.forecast;
+    const c = bundle.commercial.forecast;
+    const i = bundle.industrial.forecast;
+
+    // Residential chart
+    plotISOTime("chartRes", r.timestamps, [
+      { label: "Residential", data: r.predicted_load },
+      ...(r.historical_baseline ? [{ label:"Baseline", data:r.historical_baseline }] : [])
+    ], 6, r.unit || "");
+    document.getElementById("tableRes").innerHTML = toTableHTML(
+      ["Time", `Current${r.unit ? ` (${r.unit})` : ""}`, `Baseline${r.unit ? ` (${r.unit})` : ""}`],
+      r.timestamps.map((t, idx)=>[
+        t.replace("T"," "),
+        r.predicted_load[idx],
+        (r.historical_baseline && Array.isArray(r.historical_baseline)) ? r.historical_baseline[idx] : ""
+      ])
+    );
+
+    // Commercial chart
+    plotISOTime("chartCom", c.timestamps, [
+      { label: "Commercial", data: c.predicted_load },
+      ...(c.historical_baseline ? [{ label:"Baseline", data:c.historical_baseline }] : [])
+    ], 6, c.unit || "");
+    document.getElementById("tableCom").innerHTML = toTableHTML(
+      ["Time", `Current${c.unit ? ` (${c.unit})` : ""}`, `Baseline${c.unit ? ` (${c.unit})` : ""}`],
+      c.timestamps.map((t, idx)=>[
+        t.replace("T"," "),
+        c.predicted_load[idx],
+        (c.historical_baseline && Array.isArray(c.historical_baseline)) ? c.historical_baseline[idx] : ""
+      ])
+    );
+
+    // Industrial chart
+    plotISOTime("chartInd", i.timestamps, [
+      { label: "Industrial", data: i.predicted_load },
+      ...(i.historical_baseline ? [{ label:"Baseline", data:i.historical_baseline }] : [])
+    ], 6, i.unit || "");
+    document.getElementById("tableInd").innerHTML = toTableHTML(
+      ["Time", `Current${i.unit ? ` (${i.unit})` : ""}`, `Baseline${i.unit ? ` (${i.unit})` : ""}`],
+      i.timestamps.map((t, idx)=>[
+        t.replace("T"," "),
+        i.predicted_load[idx],
+        (i.historical_baseline && Array.isArray(i.historical_baseline)) ? i.historical_baseline[idx] : ""
+      ])
+    );
+  }
+
+  // --------------------
+  // Download
+  // --------------------
+  function downloadCSV(){
+    if(!lastResult){
+      setStatus("Nothing to download yet. Run a forecast first.", "err");
+      return;
+    }
+
+    const { mode, data } = lastResult;
+    let rows = [];
+
+    if(mode === "all"){
+      const bundle = normalizeAllPayload(data);
+
+      rows.push(["model","time","predicted","baseline"]);
+      for(const [name, pack] of Object.entries(bundle)){
+        const f = pack.forecast;
+        const hist = f.historical_baseline || [];
+        for(let i=0;i<f.timestamps.length;i++){
+          rows.push([name, f.timestamps[i], f.predicted_load[i], hist[i] ?? ""]);
+        }
+      }
+    } else {
+      rows.push(["time","predicted","baseline","location","lat","lon"]);
+      const hist = data.historical_baseline || [];
+      for(let i=0;i<data.timestamps.length;i++){
+        rows.push([
+          data.timestamps[i],
+          data.predicted_load[i],
+          hist[i] ?? "",
+          data.location ?? "",
+          data.lat ?? "",
+          data.lon ?? ""
+        ]);
+      }
+    }
+
+    const csv = rows.map(r => r.map(x => `"${String(x).replaceAll('"','""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "forecast_export.csv";
+    a.click();
+
+    URL.revokeObjectURL(url);
+    setStatus("CSV downloaded.", "ok");
+  }
+</script>
+</body>
+</html>
