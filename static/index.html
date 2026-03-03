@@ -301,6 +301,22 @@
         </div>
       </div>
 
+      <div id="resUploadBox">
+        <div class="sectionTitle">Residential CSV Input</div>
+        <div class="fileRow">
+          <div>
+            <label>Weather CSV for Residential run</label>
+            <input id="resWeatherFile" type="file" accept=".csv" />
+            <div class="hint">Columns: timestamp + temperature + humidity (accepted aliases supported).</div>
+          </div>
+          <div class="row2">
+            <button class="secondary" onclick="uploadResWeatherCSV()">Upload CSV</button>
+            <button class="secondary" onclick="clearResWeatherCSV()">Clear</button>
+          </div>
+          <div class="smallNote" id="resUploadInfo">No uploaded residential weather CSV.</div>
+        </div>
+      </div>
+
       <!-- Train Your Own Model -->
       <div id="trainBox" class="hidden">
         <div class="sectionTitle">Train your own model</div>
@@ -389,6 +405,7 @@
   // --------------------
   let charts = {};            // map canvasId -> Chart instance
   let lastResult = null;      // { mode, data }
+  let uploadedResFileId = null;
 
   // --------------------
   // UI helpers
@@ -413,6 +430,7 @@
     document.getElementById("comLocBox").classList.toggle("hidden", m !== "com");
     document.getElementById("indLocBox").classList.toggle("hidden", m !== "ind");
     document.getElementById("allLocBox").classList.toggle("hidden", m !== "all");
+    document.getElementById("resUploadBox").classList.toggle("hidden", m !== "res");
 
     // train
     document.getElementById("trainBox").classList.toggle("hidden", m !== "train");
@@ -525,6 +543,35 @@
     throw new Error(`HTTP ${res.status}: Non-JSON response from server (${snippet})`);
   }
 
+  async function uploadResWeatherCSV(){
+    const fileInput = document.getElementById("resWeatherFile");
+    if(!fileInput.files || fileInput.files.length === 0){
+      setStatus("Please choose a residential weather CSV first.", "err");
+      return;
+    }
+    const fd = new FormData();
+    fd.append("file", fileInput.files[0]);
+    setStatus("Uploading residential weather CSV...");
+    try{
+      const res = await fetch("/api/upload/weather_csv", { method: "POST", body: fd });
+      const data = await parseAPIResponse(res);
+      if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+      uploadedResFileId = data.file_id;
+      document.getElementById("resUploadInfo").textContent =
+        `Uploaded: ${data.filename} | rows=${data.rows} | file_id=${String(data.file_id).slice(0,8)}...`;
+      setStatus("Residential weather CSV uploaded.", "ok");
+    } catch(e){
+      setStatus("Residential CSV upload failed: " + e.message, "err");
+    }
+  }
+
+  function clearResWeatherCSV(){
+    uploadedResFileId = null;
+    document.getElementById("resWeatherFile").value = "";
+    document.getElementById("resUploadInfo").textContent = "No uploaded residential weather CSV.";
+    setStatus("Residential weather CSV cleared.", "ok");
+  }
+
   // --------------------
   // Train
   // --------------------
@@ -604,9 +651,14 @@
       let url, body, fetchOptions;
 
       if(mode === "res"){
-        url = "/api/forecast/res";
-        body = { location_key: document.getElementById("locRes").value, ...common };
-        fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        if(uploadedResFileId){
+          url = "/api/forecast/res_from_upload/" + uploadedResFileId;
+          fetchOptions = { method:"POST" };
+        } else {
+          url = "/api/forecast/res";
+          body = { location_key: document.getElementById("locRes").value, ...common };
+          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        }
       } else if(mode === "com"){
         url = "/api/forecast/com";
         body = { location_key: document.getElementById("locCom").value, ...common };
@@ -647,7 +699,8 @@
         setStatus("Success.", "ok");
       } else {
         const modelSrc = data.model_source ? ` Model source: ${data.model_source}.` : "";
-        setStatus(`Success.${modelSrc}`, "ok");
+        const uploadSrc = (mode === "res" && uploadedResFileId) ? " Using uploaded residential weather CSV." : "";
+        setStatus(`Success.${modelSrc}${uploadSrc}`, "ok");
       }
     } catch(e){
       setStatus("Failed: " + e.message, "err");
