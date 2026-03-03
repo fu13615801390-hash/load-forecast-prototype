@@ -308,7 +308,7 @@
         </div>
         <div>
           <label>Horizon (hours)</label>
-          <input id="horizon" type="number" min="1" max="168" value="24" />
+          <input id="horizon" type="number" min="24" max="24" value="24" readonly />
         </div>
       </div>
 
@@ -531,7 +531,7 @@
     return {
       start_iso: startIso,
       raw_start: rawStart,
-      horizon_hours: parseInt(document.getElementById("horizon").value, 10)
+      horizon_hours: 24
     };
   }
 

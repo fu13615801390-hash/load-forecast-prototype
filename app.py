@@ -837,6 +837,17 @@ def _predict_residential_with_user_model(
     return preds
 
 
+def _expand_to_horizon(values: list[float], horizon: int) -> list[float]:
+    if horizon <= 0:
+        return []
+    if not values:
+        return [0.0] * horizon
+    out = list(values)
+    while len(out) < horizon:
+        out.extend(values[: max(1, horizon - len(out))])
+    return out[:horizon]
+
+
 # ----------------------------
 # Debug endpoints (VERY useful on Azure)
 # ----------------------------
@@ -1053,17 +1064,18 @@ def api_forecast_res(req: ModelRequest):
     start = _parse_start(req.start_iso)
     label, lat, lon = resolve_preset(req.location_key)
 
+    horizon = 24
+
     # Prefer trained user model if available; fallback to original LSTM path.
     model_source = "user_trained_rf"
     try:
-        yhat = _predict_residential_with_user_model(start, 24, label, lat, lon)
+        yhat = _predict_residential_with_user_model(start, horizon, label, lat, lon)
     except Exception:
         window_rows = build_past_168_window(label, lat, lon, start)
-        yhat = _ml_predict_residential_24h(window_rows)
+        yhat = _expand_to_horizon(_ml_predict_residential_24h(window_rows), horizon)
         model_source = "default_res_lstm"
 
-    # Build next 24 hourly timestamps
-    ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(24)]
+    ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(horizon)]
 
     out = {
         "module": "forecast_res_ml",
@@ -1084,7 +1096,7 @@ def api_forecast_res(req: ModelRequest):
         out["baseline_source"] = "actual_history_csv"
         out["baseline_source_path"] = HISTORICAL_LOAD_CSV if out["historical_baseline"] is not None else None
     if out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
-        out["historical_baseline"] = _historical_baseline(req.location_key, "res", 24)
+        out["historical_baseline"] = _historical_baseline(req.location_key, "res", horizon)
         out["baseline_source"] = "prediction_history_fallback"
         out["baseline_source_path"] = None
     if out["historical_baseline"] is None:
@@ -1160,16 +1172,17 @@ def api_run_all(req: AllRequest):
     """
     start = _parse_start(req.start_iso)
 
-    # ---- Residential (ML 24h) ----
+    # ---- Residential ----
+    horizon = 24
     res_label, res_lat, res_lon = resolve_preset(req.res_location_key)
     res_model_source = "user_trained_rf"
     try:
-        res_yhat = _predict_residential_with_user_model(start, 24, res_label, res_lat, res_lon)
+        res_yhat = _predict_residential_with_user_model(start, horizon, res_label, res_lat, res_lon)
     except Exception:
         res_window = build_past_168_window(res_label, res_lat, res_lon, start)
-        res_yhat = _ml_predict_residential_24h(res_window)
+        res_yhat = _expand_to_horizon(_ml_predict_residential_24h(res_window), horizon)
         res_model_source = "default_res_lstm"
-    res_ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(24)]
+    res_ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(horizon)]
 
     res_out = {
         "module": "forecast_res_ml",
@@ -1187,7 +1200,7 @@ def api_run_all(req: AllRequest):
         res_out["baseline_source"] = "actual_history_csv"
         res_out["baseline_source_path"] = HISTORICAL_LOAD_CSV if res_out["historical_baseline"] is not None else None
     if res_out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
-        res_out["historical_baseline"] = _historical_baseline(req.res_location_key, "res", 24)
+        res_out["historical_baseline"] = _historical_baseline(req.res_location_key, "res", horizon)
         res_out["baseline_source"] = "prediction_history_fallback"
         res_out["baseline_source_path"] = None
     if res_out["historical_baseline"] is None:
@@ -1195,18 +1208,18 @@ def api_run_all(req: AllRequest):
         res_out["baseline_source_path"] = None
     _update_history(req.res_location_key, "res", res_out["predicted_load"])
 
-    res_weather = mock_weather(res_label, res_lat, res_lon, start, req.horizon_hours)
+    res_weather = mock_weather(res_label, res_lat, res_lon, start, horizon)
 
     # ---- Commercial (mock) ----
     com_label, com_lat, com_lon = resolve_preset(req.com_location_key)
-    com_weather = mock_weather(com_label, com_lat, com_lon, start, req.horizon_hours)
+    com_weather = mock_weather(com_label, com_lat, com_lon, start, horizon)
     com_out = mock_forecast("com", com_weather)
     com_out["historical_baseline"] = _historical_baseline_from_actual_csv(
         req.com_location_key, "com", com_out["timestamps"]
     )
     com_out["baseline_source"] = "actual_history_csv"
     if com_out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
-        com_out["historical_baseline"] = _historical_baseline(req.com_location_key, "com", req.horizon_hours)
+        com_out["historical_baseline"] = _historical_baseline(req.com_location_key, "com", horizon)
         com_out["baseline_source"] = "prediction_history_fallback"
     if com_out["historical_baseline"] is None:
         com_out["baseline_source"] = "none"
@@ -1214,14 +1227,14 @@ def api_run_all(req: AllRequest):
 
     # ---- Industrial (mock) ----
     ind_label, ind_lat, ind_lon = resolve_preset(req.ind_location_key)
-    ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, req.horizon_hours)
+    ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
     ind_out = mock_forecast("ind", ind_weather)
     ind_out["historical_baseline"] = _historical_baseline_from_actual_csv(
         req.ind_location_key, "ind", ind_out["timestamps"]
     )
     ind_out["baseline_source"] = "actual_history_csv"
     if ind_out["historical_baseline"] is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
-        ind_out["historical_baseline"] = _historical_baseline(req.ind_location_key, "ind", req.horizon_hours)
+        ind_out["historical_baseline"] = _historical_baseline(req.ind_location_key, "ind", horizon)
         ind_out["baseline_source"] = "prediction_history_fallback"
     if ind_out["historical_baseline"] is None:
         ind_out["baseline_source"] = "none"
@@ -1230,7 +1243,7 @@ def api_run_all(req: AllRequest):
     return {
         "module": "pipeline_all",
         "start": start.isoformat(timespec="minutes"),
-        "horizon_hours": req.horizon_hours,
+        "horizon_hours": horizon,
         "residential": {"forecast": res_out, "weather": res_weather},
         "commercial": {"forecast": com_out, "weather": com_weather},
         "industrial": {"forecast": ind_out, "weather": ind_weather},
