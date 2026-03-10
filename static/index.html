@@ -366,6 +366,7 @@
   <!-- RIGHT: Output -->
   <main class="card">
     <div class="mainTop">
+      <div class="chip"><b>Date:</b> <span id="chipDate">--</span></div>
       <div class="chip"><b>Output:</b> <span id="chipOut">—</span></div>
       <div class="chip"><b>Location:</b> <span id="chipLoc">—</span></div>
       <div class="chip"><b>Coords:</b> <span id="chipCoords">—</span></div>
@@ -427,9 +428,19 @@
   }
 
   function setChips({out="—", loc="—", coords="—"}){
+    const date = arguments[0]?.date ?? "--";
     document.getElementById("chipOut").textContent = out;
     document.getElementById("chipLoc").textContent = loc;
     document.getElementById("chipCoords").textContent = coords;
+    document.getElementById("chipDate").textContent = date ?? "--";
+  }
+
+  function formatDateRange(isoTimestamps){
+    if(!Array.isArray(isoTimestamps) || isoTimestamps.length === 0) return "--";
+    const first = new Date(isoTimestamps[0]);
+    const last = new Date(isoTimestamps[isoTimestamps.length - 1]);
+    const fmt = (d) => `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return first.toDateString() === last.toDateString() ? fmt(first) : `${fmt(first)} to ${fmt(last)}`;
   }
 
   function showHideByModel(){
@@ -512,7 +523,7 @@
         scales: {
           x: {
             type: "time",
-            time: { unit: "hour", displayFormats: { hour: "MM-dd HH:mm" } },
+            time: { unit: "hour", displayFormats: { hour: "HH:mm" } },
             ticks: {
               autoSkip: true,
               maxTicksLimit: maxTicks,
@@ -626,6 +637,7 @@
       setChips({
         out: data.module || "train_res_model",
         loc: data.filename || "No file",
+        date: formatDateRange(data.validation?.timestamps || []),
         coords: hasMetrics ? `RMSE ${m.rmse}` : `${rows} rows`
       });
       if(data.validation && Array.isArray(data.validation.timestamps)){
@@ -716,6 +728,7 @@
 
         renderAll(bundle);
         setChips({ out: "pipeline_all", loc: "Multiple", coords: "—" });
+        document.getElementById("chipDate").textContent = formatDateRange(bundle.residential.forecast.timestamps);
       } else {
         renderSingle(mode, data);
       }
@@ -770,6 +783,7 @@
     setChips({
       out: data.module || ("forecast_" + mode),
       loc: data.location || "",
+      date: formatDateRange(data.timestamps),
       coords: (data.lat != null && data.lon != null) ? `${data.lat}, ${data.lon}` : "—"
     });
   }
