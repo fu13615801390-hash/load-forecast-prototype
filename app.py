@@ -645,7 +645,8 @@ def _load_residential_history_df() -> pd.DataFrame | None:
 def build_past_168_window(label: str, lat: float, lon: float, start: datetime) -> list[dict]:
     """
     Build 168 hours of past weather ending at `start` using mock weather for now.
-    Your ML expects: temp, humidity, dewpoint + dt per hour.
+    The residential ML modules derive their own calendar features from:
+    temp, humidity, dewpoint, dt.
     """
     past_start = start - timedelta(hours=168)
     w = mock_weather(label, lat, lon, past_start, 168)
@@ -667,25 +668,35 @@ def build_past_168_window(label: str, lat: float, lon: float, start: datetime) -
 def _ml_predict_residential_24h(window_rows: list[dict]) -> list[float]:
     """
     Lazy-import the ML module so the app can start even if tensorflow fails.
-    Supports either function name your file might have.
+    Prefer the newer 10-feature Keras forecaster, then fall back to the legacy module.
     """
-    try:
-        from ml import toronto_res_model as res_model  # type: ignore
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ML import failed (tensorflow/joblib?): {e}")
+    import_errors: list[str] = []
 
-    predictor = getattr(res_model, "predict_next_24", None) or getattr(res_model, "predict_next_24h_kwh", None)
-    if predictor is None:
-        raise HTTPException(
-            status_code=500,
-            detail="ML prediction function not found. Expected predict_next_24 or predict_next_24h_kwh."
-        )
+    for module_name in ("toronto_res_forecast", "toronto_res_model"):
+        try:
+            if module_name == "toronto_res_forecast":
+                from ml import toronto_res_forecast as res_model  # type: ignore
+            else:
+                from ml import toronto_res_model as res_model  # type: ignore
+        except Exception as e:
+            import_errors.append(f"{module_name}: {e}")
+            continue
 
-    try:
-        y = predictor(window_rows)
-        return [float(v) for v in y]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ML prediction failed: {e}")
+        predictor = getattr(res_model, "predict_next_24", None) or getattr(res_model, "predict_next_24h_kwh", None)
+        if predictor is None:
+            import_errors.append(f"{module_name}: missing predict_next_24/predict_next_24h_kwh")
+            continue
+
+        try:
+            y = predictor(window_rows)
+            return [float(v) for v in y]
+        except Exception as e:
+            import_errors.append(f"{module_name}: {e}")
+
+    detail = "ML prediction failed."
+    if import_errors:
+        detail = detail + " " + " | ".join(import_errors)
+    raise HTTPException(status_code=500, detail=detail)
 
 
 def _build_train_dataframe(df: pd.DataFrame):
