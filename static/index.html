@@ -616,7 +616,6 @@
     if(weatherFileInput.files && weatherFileInput.files.length > 0){
       fd.append("weather_file", weatherFileInput.files[0]);
     }
-    fd.append("expect_rows", "168");
     fd.append("notes", notes);
 
     setStatus("Submitting train request...");

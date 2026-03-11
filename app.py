@@ -33,7 +33,7 @@ RESIDENTIAL_BASELINE_CSV = os.getenv(
     r"c:\Users\14184\Downloads\BV06 - Residential Energy Consumption Data (2020-2024) - Jan. 2020 (1).csv",
 )
 LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
-TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "user_res_model.joblib")
+TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "_legacy_user_res_model.joblib")
 
 
 @app.get("/")
@@ -794,90 +794,10 @@ def _predict_residential_with_user_model(
     timestamps_override: list[datetime] | None = None,
 ) -> list[float]:
     """
-    Forecast residential load using trained user model (if available).
-    Uses recursive lag features from historical + predicted values.
+    Legacy hook kept only so old call sites fall back cleanly.
+    The website train flow now overwrites the active Keras artifacts in models/.
     """
-    if not os.path.isfile(TRAINED_USER_MODEL_PATH):
-        raise FileNotFoundError(f"Trained user model not found at {TRAINED_USER_MODEL_PATH}")
-
-    payload = joblib.load(TRAINED_USER_MODEL_PATH)
-    model = payload.get("model")
-    feature_cols = payload.get("feature_cols")
-    if model is None or not feature_cols:
-        raise ValueError("Invalid trained user model artifact.")
-
-    hist = _load_residential_history_df()
-    if hist is None or hist.empty:
-        raise ValueError("Residential historical series unavailable for lag features.")
-
-    hist = hist.sort_values("dt").reset_index(drop=True)
-    dt_to_load = {pd.Timestamp(r["dt"]): float(r["load"]) for _, r in hist.iterrows()}
-    last_known = float(hist["load"].iloc[-1])
-    fallback_24h = float(hist["load"].tail(24).mean()) if len(hist) >= 24 else last_known
-
-    if weather_override is not None:
-        temps = [float(v) for v in weather_override.get("temperature_C", [])]
-        hums = [float(v) for v in weather_override.get("relative_humidity_pct", [])]
-    else:
-        w = mock_weather(label, lat, lon, start, horizon_hours)
-        temps = [float(v) for v in w["temperature_C"]]
-        hums = [float(v) for v in w["relative_humidity_pct"]]
-
-    if not temps or not hums:
-        raise ValueError("Weather series is empty for trained model prediction.")
-    n = min(horizon_hours, len(temps), len(hums))
-    if n <= 0:
-        raise ValueError("No overlapping weather horizon for prediction.")
-
-    preds: list[float] = []
-    for i in range(n):
-        if timestamps_override is not None and i < len(timestamps_override):
-            dt = pd.Timestamp(timestamps_override[i])
-        else:
-            dt = pd.Timestamp(start + timedelta(hours=i + 1))
-        lag1 = dt_to_load.get(dt - pd.Timedelta(hours=1), last_known if preds else last_known)
-        lag24 = dt_to_load.get(dt - pd.Timedelta(hours=24), fallback_24h)
-
-        row = {
-            "hour_sin": math.sin(2 * math.pi * (dt.hour / 24.0)),
-            "hour_cos": math.cos(2 * math.pi * (dt.hour / 24.0)),
-            "dow": float(dt.dayofweek),
-            "month": float(dt.month),
-            "is_weekend": 1.0 if dt.dayofweek in (5, 6) else 0.0,
-            "lag_1h": float(lag1),
-            "lag_24h": float(lag24),
-        }
-
-        temp_val = temps[i] if i < len(temps) else temps[-1]
-        hum_val = hums[i] if i < len(hums) else hums[-1]
-        hdd_val = max(0.0, 18.0 - float(temp_val))
-
-        if "temperature_C" in feature_cols:
-            row["temperature_C"] = temp_val
-        if "temp_c" in feature_cols:
-            row["temp_c"] = temp_val
-        if "temp" in feature_cols:
-            row["temp"] = temp_val
-        if "temperature" in feature_cols:
-            row["temperature"] = temp_val
-        if "relative_humidity_pct" in feature_cols:
-            row["relative_humidity_pct"] = hum_val
-        if "humidity_percent" in feature_cols:
-            row["humidity_percent"] = hum_val
-        if "humidity" in feature_cols:
-            row["humidity"] = hum_val
-        if "rh" in feature_cols:
-            row["rh"] = hum_val
-        if "hdd" in feature_cols:
-            row["hdd"] = hdd_val
-
-        x = pd.DataFrame([[row.get(c, 0.0) for c in feature_cols]], columns=feature_cols)
-        yhat = float(model.predict(x)[0])
-        preds.append(yhat)
-        dt_to_load[dt] = yhat
-        last_known = yhat
-
-    return preds
+    raise FileNotFoundError(f"Legacy trained user model path is disabled: {TRAINED_USER_MODEL_PATH}")
 
 
 def _expand_to_horizon(values: list[float], horizon: int) -> list[float]:
@@ -1314,8 +1234,8 @@ async def api_train(
     notes: str | None = Form(default=None),
 ):
     """
-    Train a practical residential load model from uploaded CSV and return metrics.
-    This does not overwrite your LSTM artifacts; it saves a separate user model artifact.
+    Train the active residential Keras model from uploaded data and return metrics.
+    This updates the artifacts used by the website forecast flow.
     """
     notes_text = (notes or "").strip()
 
@@ -1411,74 +1331,20 @@ async def api_train(
             )
 
     try:
-        from sklearn.ensemble import RandomForestRegressor
-        from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+        from ml.user_res_trainer import train_user_lstm  # type: ignore
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"scikit-learn not available: {e}")
+        raise HTTPException(status_code=500, detail=f"Unable to load Keras trainer: {e}")
 
     try:
-        work, X, y, feature_cols, target_col = _build_train_dataframe(df)
+        result = train_user_lstm(
+            df=df,
+            output_dir="models",
+            source_name=file.filename or "uploaded.csv",
+            notes=notes_text,
+        )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Training data prep failed: {e}")
+        raise HTTPException(status_code=400, detail=f"Training failed: {e}")
 
-    split_idx = int(len(X) * 0.8)
-    if split_idx < 24 or (len(X) - split_idx) < 12:
-        raise HTTPException(status_code=400, detail="Dataset too small for train/validation split.")
-
-    X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
-    y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
-
-    model = RandomForestRegressor(
-        n_estimators=300,
-        max_depth=14,
-        random_state=42,
-        n_jobs=-1,
-    )
-    model.fit(X_train, y_train)
-    pred = model.predict(X_val)
-
-    mae = float(mean_absolute_error(y_val, pred))
-    rmse = float(np.sqrt(mean_squared_error(y_val, pred)))
-    r2 = float(r2_score(y_val, pred))
-
-    model_payload = {
-        "model_type": "RandomForestRegressor",
-        "target_col": target_col,
-        "feature_cols": feature_cols,
-        "trained_at": datetime.now().isoformat(timespec="seconds"),
-        "notes": notes_text,
-        "model": model,
-    }
-    model_dir = os.path.join("models", "trained")
-    os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "user_res_model.joblib")
-    joblib.dump(model_payload, model_path)
-
-    return {
-        "ok": True,
-        "module": "train_res_model",
-        "message": "Training completed.",
-        "trained": True,
-        "filename": file.filename,
-        "input_rows": input_rows,
-        "rows": int(len(work)),
-        "columns": [str(c) for c in df.columns],
-        "feature_columns": [str(c) for c in feature_cols],
-        "target_column": str(target_col),
-        "train_rows": int(len(X_train)),
-        "val_rows": int(len(X_val)),
-        "metrics": {
-            "mae": round(mae, 4),
-            "rmse": round(rmse, 4),
-            "r2": round(r2, 4),
-        },
-        "model_path": model_path,
-        "unit": "kWh",
-        "validation": {
-            "timestamps": [d.isoformat(timespec="minutes") for d in work["dt"].iloc[split_idx:].tolist()],
-            "actual": [round(float(v), 4) for v in y_val.tolist()],
-            "predicted": [round(float(v), 4) for v in pred.tolist()],
-        },
-        "weather_merge": weather_merge_stats,
-        "notes": notes_text,
-    }
+    result["input_rows"] = input_rows
+    result["weather_merge"] = weather_merge_stats
+    return result
