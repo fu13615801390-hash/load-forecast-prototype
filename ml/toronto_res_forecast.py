@@ -1,4 +1,5 @@
 import os
+from glob import glob
 
 import joblib
 import numpy as np
@@ -40,6 +41,17 @@ def _paths():
     }
 
 
+def _pick_existing_path(preferred_path, pattern):
+    if os.path.isfile(preferred_path):
+        return preferred_path
+
+    matches = sorted(glob(pattern))
+    for match in matches:
+        if os.path.isfile(match):
+            return match
+    return preferred_path
+
+
 def _resolve_model_loader():
     global _load_model
     if _load_model is not None:
@@ -69,6 +81,17 @@ def _resolve_model_path():
     for path in paths["model_candidates"]:
         if os.path.isfile(path):
             return path
+
+    models_dir = paths["models_dir"]
+    fallback_patterns = [
+        os.path.join(models_dir, "toronto*.keras"),
+        os.path.join(models_dir, "*.keras"),
+    ]
+    for pattern in fallback_patterns:
+        matches = sorted(glob(pattern))
+        for match in matches:
+            if os.path.isfile(match):
+                return match
     raise FileNotFoundError(
         "Missing Keras model file. Expected one of: "
         + ", ".join(paths["model_candidates"])
@@ -81,15 +104,21 @@ def load_artifacts():
         return
 
     paths = _paths()
-    missing = [name for name, path in {"sx": paths["sx"], "sy": paths["sy"]}.items() if not os.path.isfile(path)]
+    scaler_x_path = _pick_existing_path(paths["sx"], os.path.join(paths["models_dir"], "scaler_x*.save"))
+    scaler_y_path = _pick_existing_path(paths["sy"], os.path.join(paths["models_dir"], "scaler_y*.save"))
+    missing = [
+        name
+        for name, path in {"sx": scaler_x_path, "sy": scaler_y_path}.items()
+        if not os.path.isfile(path)
+    ]
     if missing:
         raise FileNotFoundError(f"Missing scaler files in {paths['models_dir']}: {missing}")
 
     try:
         model_loader = _resolve_model_loader()
         model = model_loader(_resolve_model_path())
-        scaler_x = joblib.load(paths["sx"])
-        scaler_y = joblib.load(paths["sy"])
+        scaler_x = joblib.load(scaler_x_path)
+        scaler_y = joblib.load(scaler_y_path)
     except Exception:
         _model = None
         _scaler_x = None

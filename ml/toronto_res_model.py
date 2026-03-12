@@ -1,4 +1,5 @@
 import os
+from glob import glob
 
 import joblib
 import numpy as np
@@ -22,6 +23,17 @@ def _paths():
         "sx": os.path.join(models_dir, "scaler_x.save"),
         "sy": os.path.join(models_dir, "scaler_y.save"),
     }
+
+
+def _pick_existing_path(preferred_path, pattern):
+    if os.path.isfile(preferred_path):
+        return preferred_path
+
+    matches = sorted(glob(pattern))
+    for match in matches:
+        if os.path.isfile(match):
+            return match
+    return preferred_path
 
 
 def _resolve_model_loader():
@@ -54,15 +66,22 @@ def load_artifacts():
         return
 
     p = _paths()
-    missing = [k for k in ["model", "sx", "sy"] if not os.path.isfile(p[k])]
+    model_path = _pick_existing_path(p["model"], os.path.join(p["models_dir"], "toronto*.keras"))
+    scaler_x_path = _pick_existing_path(p["sx"], os.path.join(p["models_dir"], "scaler_x*.save"))
+    scaler_y_path = _pick_existing_path(p["sy"], os.path.join(p["models_dir"], "scaler_y*.save"))
+    missing = [
+        name
+        for name, path in {"model": model_path, "sx": scaler_x_path, "sy": scaler_y_path}.items()
+        if not os.path.isfile(path)
+    ]
     if missing:
         raise FileNotFoundError(f"Missing model files in {p['models_dir']}: {missing}")
 
     try:
         model_loader = _resolve_model_loader()
-        model = model_loader(p["model"])
-        scaler_x = joblib.load(p["sx"])
-        scaler_y = joblib.load(p["sy"])
+        model = model_loader(model_path)
+        scaler_x = joblib.load(scaler_x_path)
+        scaler_y = joblib.load(scaler_y_path)
     except ModuleNotFoundError as e:
         msg = str(e).lower()
         if "sklearn" in msg:
