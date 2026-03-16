@@ -307,9 +307,8 @@
           <div>
             <label>Residential input source</label>
             <select id="resInputSource">
-              <option value="default_repo" selected>Default (repo data)</option>
+              <option value="live_api" selected>Live API weather</option>
               <option value="uploaded_csv">Uploaded CSV</option>
-              <option value="live_api">Live API weather</option>
             </select>
           </div>
           <div id="resUploadControls">
@@ -686,9 +685,6 @@
             throw new Error("Select 'Uploaded CSV' requires uploading a residential weather CSV first.");
           }
           url = "/api/forecast/res_from_upload/" + uploadedResFileId;
-          fetchOptions = { method: "POST" };
-        } else if(source === "default_repo"){
-          url = "/api/forecast/res_default_repo";
           fetchOptions = { method: "POST" };
         } else {
           url = "/api/forecast/res";

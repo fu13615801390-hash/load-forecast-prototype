@@ -24,10 +24,6 @@ HISTORY_KEEP_LAST = 14
 WEATHER_UPLOAD_STORE: dict[str, dict] = {}
 HISTORICAL_LOAD_CSV = os.getenv("HISTORICAL_LOAD_CSV", "data/historical_load.csv")
 USE_PRED_HISTORY_BASELINE_FALLBACK = os.getenv("USE_PRED_HISTORY_BASELINE_FALLBACK", "false").lower() == "true"
-DEFAULT_RES_WEATHER_CSV = os.getenv(
-    "DEFAULT_RES_WEATHER_CSV",
-    r"data\BV06 - HOURLY Toronto Historical Weather Data (2020-2024) - 2020-2024.csv",
-)
 RESIDENTIAL_BASELINE_CSV = os.getenv(
     "RESIDENTIAL_BASELINE_CSV",
     r"c:\Users\14184\Downloads\BV06 - Residential Energy Consumption Data (2020-2024) - Jan. 2020 (1).csv",
@@ -338,34 +334,6 @@ def _parse_weather_training_df(content: bytes) -> pd.DataFrame:
     )
     wdf = wdf.dropna(subset=["__dt", "temperature_C", "relative_humidity_pct"]).sort_values("__dt").reset_index(drop=True)
     return wdf
-
-
-def _load_default_repo_weather_payload(horizon: int = 24) -> dict:
-    """
-    Load default residential weather input from repository CSV.
-    """
-    candidates: list[str] = [DEFAULT_RES_WEATHER_CSV]
-    candidates.extend(glob.glob("data/*HOURLY*Weather*.csv"))
-    candidates.extend(glob.glob("data/*weather*.csv"))
-    csv_path = next((p for p in candidates if p and os.path.isfile(p)), None)
-    if not csv_path:
-        raise HTTPException(status_code=500, detail="Default weather CSV not found in repository data folder.")
-
-    try:
-        with open(csv_path, "rb") as f:
-            parsed = _parse_uploaded_weather_csv(f.read())
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unable to load default weather CSV: {e}")
-
-    n = min(max(1, int(horizon)), len(parsed["timestamps"]))
-    return {
-        "timestamps": parsed["timestamps"][-n:],
-        "temperature_C": parsed["temperature_C"][-n:],
-        "relative_humidity_pct": parsed["relative_humidity_pct"][-n:],
-        "source_path": csv_path,
-    }
 
 
 # ----------------------------
@@ -959,15 +927,6 @@ def api_forecast_res_from_upload(file_id: str):
     weather_payload = _get_uploaded_weather(file_id)
     out = _forecast_res_with_weather_payload(weather_payload, location_key="toronto")
     out["input_source"] = "uploaded_csv"
-    return out
-
-
-@app.post("/api/forecast/res_default_repo")
-def api_forecast_res_default_repo():
-    weather_payload = _load_default_repo_weather_payload(24)
-    out = _forecast_res_with_weather_payload(weather_payload, location_key="toronto")
-    out["input_source"] = "default_repo_csv"
-    out["input_source_path"] = weather_payload.get("source_path")
     return out
 
 
