@@ -733,7 +733,8 @@
       } else {
         const modelSrc = data.model_source ? ` Model source: ${data.model_source}.` : "";
         const inputSrc = data.input_source ? ` Input source: ${data.input_source}.` : "";
-        setStatus(`Success.${modelSrc}${inputSrc}`, "ok");
+        const modelErr = data.model_error ? ` Model error: ${data.model_error}.` : "";
+        setStatus(`Success.${modelSrc}${inputSrc}${modelErr}`, data.model_error ? "err" : "ok");
       }
     } catch(e){
       setStatus("Failed: " + e.message, "err");
