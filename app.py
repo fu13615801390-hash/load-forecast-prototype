@@ -813,12 +813,12 @@ def _predict_commercial_24h(location_key: str) -> dict:
     )
 
     ts = [pd.Timestamp(v).isoformat(timespec="minutes") for v in forecast_df["forecast_time"].tolist()]
-    yhat = [round(float(v), 4) for v in forecast_df["predicted_load_MW"].tolist()]
+    yhat = [round(float(v), 2) for v in forecast_df["predicted_load_kWh"].tolist()]
 
     return {
         "module": "forecast_com_ml",
         "sector": "com",
-        "unit": DISPLAY_ENERGY_UNIT,
+        "unit": "kWh",
         "timestamps": ts,
         "predicted_load": yhat,
         "location": label,
