@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 import math
 import os
+import re
 import requests
 import pandas as pd
 import io
@@ -279,24 +280,42 @@ def _parse_uploaded_weather_csv(content: bytes) -> dict:
     if hum_col is None:
         hum_col = next((c for c in cols if ("rel hum" in c.lower()) and ("flag" not in c.lower())), None)
 
+    dew_col = _find_first_col(df, ["dew_point_temp_c", "dew point temp (°c)", "dew_point_c", "dewpoint_c", "dewpoint"])
+    if dew_col is None:
+        dew_col = next((c for c in cols if ("dew" in c.lower()) and ("flag" not in c.lower())), None)
+
     if ts_col is None or temp_col is None or hum_col is None:
         raise HTTPException(
             status_code=400,
             detail="Weather CSV must include timestamp, temperature_C (or temp), and relative_humidity_pct (or humidity).",
         )
 
-    tmp = df[[ts_col, temp_col, hum_col]].copy()
+    keep_cols = [ts_col, temp_col, hum_col] + ([dew_col] if dew_col is not None else [])
+    tmp = df[keep_cols].copy()
     tmp[ts_col] = pd.to_datetime(tmp[ts_col], errors="coerce")
     tmp[temp_col] = pd.to_numeric(tmp[temp_col], errors="coerce")
     tmp[hum_col] = pd.to_numeric(tmp[hum_col], errors="coerce")
+    if dew_col is not None:
+        tmp[dew_col] = pd.to_numeric(tmp[dew_col], errors="coerce")
     tmp = tmp.dropna(subset=[ts_col, temp_col, hum_col]).sort_values(ts_col).reset_index(drop=True)
     if tmp.empty:
         raise HTTPException(status_code=400, detail="Weather CSV has no valid rows after parsing.")
+
+    dew_values: list[float]
+    if dew_col is not None:
+        dew_series = tmp[dew_col]
+        if dew_series.isna().all():
+            dew_values = []
+        else:
+            dew_values = [round(float(v), 4) if not pd.isna(v) else None for v in dew_series.tolist()]  # type: ignore[list-item]
+    else:
+        dew_values = []
 
     return {
         "timestamps": [d.isoformat(timespec="minutes") for d in tmp[ts_col].tolist()],
         "temperature_C": [round(float(v), 4) for v in tmp[temp_col].tolist()],
         "relative_humidity_pct": [round(float(v), 4) for v in tmp[hum_col].tolist()],
+        "dew_point_C": dew_values,
     }
 
 
@@ -329,15 +348,125 @@ def _parse_weather_training_df(content: bytes) -> pd.DataFrame:
     Parse uploaded weather CSV into [__dt, temperature_C, relative_humidity_pct].
     """
     parsed = _parse_uploaded_weather_csv(content)
+    dew_values = parsed.get("dew_point_C") or []
+    if dew_values and len(dew_values) == len(parsed["timestamps"]):
+        dew_series = pd.to_numeric(pd.Series(dew_values), errors="coerce")
+    else:
+        temp_series = pd.to_numeric(pd.Series(parsed["temperature_C"]), errors="coerce")
+        rh_series = pd.to_numeric(pd.Series(parsed["relative_humidity_pct"]), errors="coerce")
+        # Magnus approximation for dew point in Celsius.
+        alpha = np.log((rh_series.clip(lower=1e-6)) / 100.0) + (17.625 * temp_series) / (243.04 + temp_series)
+        dew_series = 243.04 * alpha / (17.625 - alpha)
+
     wdf = pd.DataFrame(
         {
             "__dt": pd.to_datetime(parsed["timestamps"], errors="coerce"),
             "temperature_C": pd.to_numeric(pd.Series(parsed["temperature_C"]), errors="coerce"),
             "relative_humidity_pct": pd.to_numeric(pd.Series(parsed["relative_humidity_pct"]), errors="coerce"),
+            "dew_point_C": dew_series,
         }
     )
-    wdf = wdf.dropna(subset=["__dt", "temperature_C", "relative_humidity_pct"]).sort_values("__dt").reset_index(drop=True)
+    wdf = (
+        wdf.dropna(subset=["__dt", "temperature_C", "relative_humidity_pct", "dew_point_C"])
+        .sort_values("__dt")
+        .reset_index(drop=True)
+    )
     return wdf
+
+
+def _safe_filename_part(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    return text.strip("._") or "file"
+
+
+def _build_combined_training_dataframe(df: pd.DataFrame, weather_df: pd.DataFrame | None) -> tuple[pd.DataFrame, dict | None]:
+    weather_merge_stats: dict | None = None
+
+    try:
+        load_df = _with_datetime_column(df, "__dt")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Power CSV datetime parse failed: {e}")
+
+    target_col = _find_first_col(
+        load_df,
+        [
+            "TOTAL_CONSUMPTION (kWh)",
+            "Total Consumption (kWh)",
+            "total_consumption_kwh",
+            "consumption_kwh",
+            "predicted_load",
+            "load",
+            "actual_load",
+            "demand",
+            "kwh",
+            "kw",
+        ],
+    )
+    if target_col is None:
+        raise HTTPException(status_code=400, detail="Power CSV must include a load column such as Total Consumption (kWh).")
+
+    load_df[target_col] = pd.to_numeric(load_df[target_col], errors="coerce")
+    load_df["__dt_hour"] = pd.to_datetime(load_df["__dt"]).dt.floor("h")
+    combined = load_df[["__dt_hour", target_col]].rename(
+        columns={"__dt_hour": "datetime", target_col: "TOTAL_CONSUMPTION (kWh)"}
+    )
+
+    if weather_df is not None:
+        weather_hourly = weather_df.copy()
+        weather_hourly["__dt_hour"] = pd.to_datetime(weather_hourly["__dt"]).dt.floor("h")
+        merged = combined.merge(
+            weather_hourly[["__dt_hour", "temperature_C", "relative_humidity_pct", "dew_point_C"]],
+            left_on="datetime",
+            right_on="__dt_hour",
+            how="left",
+        )
+        matched = int(merged["temperature_C"].notna().sum())
+        if matched < max(12, int(0.05 * len(merged))):
+            raise HTTPException(
+                status_code=400,
+                detail="Weather merge matched too few rows. Check timestamp alignment/timezone between load and weather CSVs.",
+            )
+        weather_merge_stats = {
+            "weather_rows": int(len(weather_hourly)),
+            "power_rows_after_dt_parse": int(len(load_df)),
+            "merged_rows": int(len(merged)),
+            "weather_matched_rows": matched,
+        }
+        combined = merged.drop(columns=["__dt_hour"], errors="ignore")
+        combined = combined.rename(
+            columns={
+                "temperature_C": "Temp (°C)",
+                "relative_humidity_pct": "Rel Hum (%)",
+                "dew_point_C": "Dew Point Temp (°C)",
+            }
+        )
+    else:
+        temp_col = _find_first_col(load_df, ["Temp (°C)", "Temp (C)", "temperature_C", "temp_c", "temp"])
+        hum_col = _find_first_col(load_df, ["Rel Hum (%)", "relative_humidity_pct", "humidity_percent", "humidity"])
+        dew_col = _find_first_col(load_df, ["Dew Point Temp (°C)", "Dew Point Temp (C)", "dew_point_c", "dewpoint_c", "dewpoint"])
+        if temp_col is None or hum_col is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Training requires either a separate weather CSV or weather columns in the power CSV.",
+            )
+        combined["Temp (°C)"] = pd.to_numeric(load_df[temp_col], errors="coerce")
+        combined["Rel Hum (%)"] = pd.to_numeric(load_df[hum_col], errors="coerce")
+        if dew_col is not None:
+            combined["Dew Point Temp (°C)"] = pd.to_numeric(load_df[dew_col], errors="coerce")
+        else:
+            alpha = np.log((combined["Rel Hum (%)"].clip(lower=1e-6)) / 100.0) + (
+                17.625 * combined["Temp (°C)"]
+            ) / (243.04 + combined["Temp (°C)"])
+            combined["Dew Point Temp (°C)"] = 243.04 * alpha / (17.625 - alpha)
+
+    combined = combined[
+        ["datetime", "TOTAL_CONSUMPTION (kWh)", "Temp (°C)", "Rel Hum (%)", "Dew Point Temp (°C)"]
+    ].copy()
+    combined["datetime"] = pd.to_datetime(combined["datetime"], errors="coerce")
+    for col in ["TOTAL_CONSUMPTION (kWh)", "Temp (°C)", "Rel Hum (%)", "Dew Point Temp (°C)"]:
+        combined[col] = pd.to_numeric(combined[col], errors="coerce")
+    combined = combined.dropna().drop_duplicates(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+    return combined, weather_merge_stats
 
 
 # ----------------------------
@@ -1388,6 +1517,8 @@ async def api_train(
         raise HTTPException(status_code=400, detail="Uploaded CSV has no rows.")
 
     weather_merge_stats: dict | None = None
+    weather_filename: str | None = None
+    parsed_weather_df: pd.DataFrame | None = None
     if weather_file is not None:
         if weather_file.filename and not str(weather_file.filename).lower().endswith(".csv"):
             raise HTTPException(status_code=400, detail="Weather training file must be a .csv")
@@ -1408,41 +1539,28 @@ async def api_train(
 
         if wdf.empty:
             raise HTTPException(status_code=400, detail="Weather training CSV has no valid rows.")
+        parsed_weather_df = wdf
+        weather_filename = weather_file.filename
 
-        try:
-            load_df = _with_datetime_column(df, "__dt")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Power CSV datetime parse failed: {e}")
+    combined_df, weather_merge_stats = _build_combined_training_dataframe(df, parsed_weather_df)
+    if weather_merge_stats is not None:
+        weather_merge_stats["weather_filename"] = weather_filename
 
-        load_df["__dt_hour"] = pd.to_datetime(load_df["__dt"]).dt.floor("h")
-        wdf["__dt_hour"] = pd.to_datetime(wdf["__dt"]).dt.floor("h")
-        merged = load_df.merge(
-            wdf[["__dt_hour", "temperature_C", "relative_humidity_pct"]],
-            on="__dt_hour",
-            how="left",
-            suffixes=("", "_wx"),
-        )
-        matched = int(merged["temperature_C"].notna().sum())
-        if matched < max(12, int(0.05 * len(merged))):
-            raise HTTPException(
-                status_code=400,
-                detail="Weather merge matched too few rows. Check timestamp alignment/timezone between load and weather CSVs.",
-            )
-        df = merged.drop(columns=["__dt", "__dt_hour"], errors="ignore")
-        weather_merge_stats = {
-            "weather_filename": weather_file.filename,
-            "weather_rows": int(len(wdf)),
-            "power_rows_after_dt_parse": int(len(load_df)),
-            "merged_rows": int(len(merged)),
-            "weather_matched_rows": matched,
-        }
+    combined_dir = os.path.join("data", "combined_training")
+    os.makedirs(combined_dir, exist_ok=True)
+    combined_name = f"{_safe_filename_part(file.filename or 'training')}_combined.csv"
+    combined_path = os.path.join(combined_dir, combined_name)
+    combined_df.to_csv(combined_path, index=False)
 
+    df = combined_df
     input_rows = int(len(df))
     expected = int(expect_rows) if expect_rows is not None else None
     if expected is not None and input_rows != expected:
         if auto_trim_to_expected and input_rows > expected:
             try:
-                temp_for_trim = _with_datetime_column(df, "__dt").sort_values("__dt").reset_index(drop=True)
+                temp_for_trim = df.copy()
+                temp_for_trim["__dt"] = pd.to_datetime(temp_for_trim["datetime"], errors="coerce")
+                temp_for_trim = temp_for_trim.sort_values("__dt").reset_index(drop=True)
                 df = temp_for_trim.tail(expected).drop(columns=["__dt"], errors="ignore").reset_index(drop=True)
                 input_rows = int(len(df))
             except Exception as e:
@@ -1473,4 +1591,6 @@ async def api_train(
 
     result["input_rows"] = input_rows
     result["weather_merge"] = weather_merge_stats
+    result["combined_training_csv"] = combined_path
+    result["combined_columns"] = [str(c) for c in df.columns]
     return result

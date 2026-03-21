@@ -331,7 +331,7 @@
         <div class="sectionTitle">Train your own model</div>
         <div class="fileRow">
           <div>
-            <label>Training data CSV (168 rows)</label>
+            <label>Training power CSV</label>
             <input id="trainDataFile" type="file" accept=".csv" />
           </div>
           <div>
@@ -346,7 +346,7 @@
             <button onclick="trainModel()">Train Model</button>
             <button class="secondary" onclick="downloadCSV()">Download CSV</button>
           </div>
-          <div class="hint">Use a power-consumption CSV with exactly 168 rows (hourly).</div>
+          <div class="hint">We will build one combined training CSV with: datetime, TOTAL_CONSUMPTION (kWh), Temp (°C), Rel Hum (%), Dew Point Temp (°C).</div>
         </div>
       </div>
 
@@ -631,7 +631,8 @@
       const metricText = hasMetrics ? ` MAE=${m.mae}, RMSE=${m.rmse}, R2=${m.r2}` : "";
       const merge = data.weather_merge;
       const mergeText = merge ? ` Weather match: ${merge.weather_matched_rows}/${merge.merged_rows}.` : "";
-      setStatus((data.message || `Train request accepted (${rows} rows, ${cols} columns).`) + ` Input rows: ${inputRows}.` + metricText + mergeText, "ok");
+      const combinedText = data.combined_training_csv ? ` Combined CSV: ${data.combined_training_csv}.` : "";
+      setStatus((data.message || `Train request accepted (${rows} rows, ${cols} columns).`) + ` Input rows: ${inputRows}.` + metricText + mergeText + combinedText, "ok");
       setChips({
         out: data.module || "train_res_model",
         loc: data.filename || "No file",
