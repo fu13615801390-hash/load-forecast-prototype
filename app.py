@@ -31,6 +31,8 @@ RESIDENTIAL_BASELINE_CSV = os.getenv(
 LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
 TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "_legacy_user_res_model.joblib")
 COMMERCIAL_MODEL_DIR = os.path.join("models", "commercial")
+DISPLAY_ENERGY_UNIT = "MWh"
+KWH_TO_MWH = 1.0 / 1000.0
 
 
 @app.get("/")
@@ -780,6 +782,25 @@ def _expand_to_horizon(values: list[float], horizon: int) -> list[float]:
     return out[:horizon]
 
 
+def _convert_kwh_list_to_mwh(values: list[float] | None) -> list[float] | None:
+    if values is None:
+        return None
+    out: list[float] = []
+    for value in values:
+        if value is None:
+            out.append(None)  # type: ignore[arg-type]
+        else:
+            out.append(round(float(value) * KWH_TO_MWH, 4))
+    return out
+
+
+def _set_energy_payload_to_mwh(payload: dict) -> dict:
+    payload["predicted_load"] = _convert_kwh_list_to_mwh(payload.get("predicted_load"))
+    payload["historical_baseline"] = _convert_kwh_list_to_mwh(payload.get("historical_baseline"))
+    payload["unit"] = DISPLAY_ENERGY_UNIT
+    return payload
+
+
 def _predict_commercial_24h(location_key: str) -> dict:
     label, lat, lon = resolve_preset(location_key)
     from ml import commercial_forecast  # type: ignore
@@ -792,12 +813,12 @@ def _predict_commercial_24h(location_key: str) -> dict:
     )
 
     ts = [pd.Timestamp(v).isoformat(timespec="minutes") for v in forecast_df["forecast_time"].tolist()]
-    yhat = [round(float(v), 2) for v in forecast_df["predicted_load_kWh"].tolist()]
+    yhat = [round(float(v), 4) for v in forecast_df["predicted_load_MW"].tolist()]
 
     return {
         "module": "forecast_com_ml",
         "sector": "com",
-        "unit": "kWh",
+        "unit": DISPLAY_ENERGY_UNIT,
         "timestamps": ts,
         "predicted_load": yhat,
         "location": label,
@@ -947,7 +968,7 @@ def _forecast_res_with_weather_payload(weather_payload: dict, location_key: str 
         out["baseline_source_path"] = None
 
     _update_history(location_key, "res", out["predicted_load"])
-    return out
+    return _set_energy_payload_to_mwh(out)
 
 
 @app.post("/api/forecast/res_from_upload/{file_id}")
@@ -973,7 +994,7 @@ def api_forecast_com_from_upload(file_id: str):
     out["lon"] = ""
     out["baseline_source"] = "none"
     out["historical_baseline"] = None
-    return out
+    return _set_energy_payload_to_mwh(out)
 
 
 @app.post("/api/forecast/ind_from_upload/{file_id}")
@@ -991,7 +1012,7 @@ def api_forecast_ind_from_upload(file_id: str):
     out["lon"] = ""
     out["baseline_source"] = "none"
     out["historical_baseline"] = None
-    return out
+    return _set_energy_payload_to_mwh(out)
 
 
 @app.post("/api/run_all_from_upload/{file_id}")
@@ -1004,8 +1025,8 @@ def api_run_all_from_upload(file_id: str):
         "relative_humidity_pct": weather_payload["relative_humidity_pct"][:n],
     }
     res_out = _forecast_res_with_weather_payload(w, location_key="toronto")
-    com_out = mock_forecast("com", w)
-    ind_out = mock_forecast("ind", w)
+    com_out = _set_energy_payload_to_mwh(mock_forecast("com", w))
+    ind_out = _set_energy_payload_to_mwh(mock_forecast("ind", w))
     com_out["historical_baseline"] = None
     ind_out["historical_baseline"] = None
 
@@ -1067,7 +1088,7 @@ def api_forecast_res(req: ModelRequest):
 
     # store history (use 24 horizon for ML)
     _update_history(req.location_key, "res", out["predicted_load"])
-    return out
+    return _set_energy_payload_to_mwh(out)
 
 
 @app.post("/api/forecast/com")
@@ -1100,7 +1121,7 @@ def api_forecast_com(req: ModelRequest):
 
     out["historical_baseline"] = baseline
     out["baseline_source"] = baseline_source
-    return out
+    return _set_energy_payload_to_mwh(out)
 
 
 @app.post("/api/forecast/ind")
@@ -1128,7 +1149,7 @@ def api_forecast_ind(req: ModelRequest):
     out["location"] = label
     out["lat"] = lat
     out["lon"] = lon
-    return out
+    return _set_energy_payload_to_mwh(out)
 
 
 @app.post("/api/run_all")
@@ -1174,6 +1195,7 @@ def api_run_all(req: AllRequest):
         res_out["baseline_source"] = "none"
         res_out["baseline_source_path"] = None
     _update_history(req.res_location_key, "res", res_out["predicted_load"])
+    res_out = _set_energy_payload_to_mwh(res_out)
 
     res_weather = mock_weather(res_label, res_lat, res_lon, start, horizon)
 
@@ -1208,6 +1230,7 @@ def api_run_all(req: AllRequest):
     if com_out["historical_baseline"] is None:
         com_out["baseline_source"] = "none"
     _update_history(req.com_location_key, "com", com_out["predicted_load"])
+    com_out = _set_energy_payload_to_mwh(com_out)
 
     # ---- Industrial (mock) ----
     ind_label, ind_lat, ind_lon = resolve_preset(req.ind_location_key)
@@ -1223,6 +1246,7 @@ def api_run_all(req: AllRequest):
     if ind_out["historical_baseline"] is None:
         ind_out["baseline_source"] = "none"
     _update_history(req.ind_location_key, "ind", ind_out["predicted_load"])
+    ind_out = _set_energy_payload_to_mwh(ind_out)
 
     return {
         "module": "pipeline_all",
