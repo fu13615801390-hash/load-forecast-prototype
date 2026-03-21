@@ -847,6 +847,27 @@ def _predict_commercial_24h(location_key: str) -> dict:
     }
 
 
+def _predict_alberta_24h(location_key: str, start: datetime) -> dict:
+    label, lat, lon = resolve_preset(location_key)
+    from ml import alberta_model  # type: ignore
+
+    window_rows = build_past_168_window(label, lat, lon, start)
+    yhat = [round(float(v), 2) for v in alberta_model.predict_next_24(window_rows)]
+    ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(len(yhat))]
+
+    return {
+        "module": "forecast_alberta_ml",
+        "sector": "ind",
+        "unit": "MW",
+        "timestamps": ts,
+        "predicted_load": yhat,
+        "location": label,
+        "lat": lat,
+        "lon": lon,
+        "model_source": "alberta_provincial_lstm",
+    }
+
+
 # ----------------------------
 # Debug endpoints (VERY useful on Azure)
 # ----------------------------
@@ -1164,11 +1185,27 @@ def api_forecast_ind(req: ModelRequest):
     Industrial: still mock (until you have ind model).
     """
     start = _parse_start(req.start_iso)
-    label, lat, lon = resolve_preset(req.location_key)
-    w = mock_weather(label, lat, lon, start, req.horizon_hours)
-
     sector = "ind"
-    out = mock_forecast(sector, w)
+    if req.location_key == "alberta":
+        try:
+            out = _predict_alberta_24h(req.location_key, start)
+        except Exception as e:
+            label, lat, lon = resolve_preset(req.location_key)
+            w = mock_weather(label, lat, lon, start, req.horizon_hours)
+            out = mock_forecast(sector, w)
+            out["location"] = label
+            out["lat"] = lat
+            out["lon"] = lon
+            out["model_source"] = "mock_fallback"
+            out["model_error"] = str(e)
+    else:
+        label, lat, lon = resolve_preset(req.location_key)
+        w = mock_weather(label, lat, lon, start, req.horizon_hours)
+        out = mock_forecast(sector, w)
+        out["location"] = label
+        out["lat"] = lat
+        out["lon"] = lon
+
     baseline = _historical_baseline_from_actual_csv(req.location_key, sector, out["timestamps"])
     baseline_source = "actual_history_csv"
     if baseline is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
@@ -1180,9 +1217,6 @@ def api_forecast_ind(req: ModelRequest):
 
     out["historical_baseline"] = baseline
     out["baseline_source"] = baseline_source
-    out["location"] = label
-    out["lat"] = lat
-    out["lon"] = lon
     return _normalize_display_unit(out)
 
 
@@ -1269,8 +1303,32 @@ def api_run_all(req: AllRequest):
 
     # ---- Industrial (mock) ----
     ind_label, ind_lat, ind_lon = resolve_preset(req.ind_location_key)
-    ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
-    ind_out = mock_forecast("ind", ind_weather)
+    if req.ind_location_key == "alberta":
+        try:
+            ind_out = _predict_alberta_24h(req.ind_location_key, start)
+            ind_weather = {
+                "module": "weather_model_driven",
+                "location": ind_label,
+                "lat": ind_lat,
+                "lon": ind_lon,
+                "timestamps": ind_out["timestamps"],
+                "temperature_C": [],
+                "relative_humidity_pct": [],
+            }
+        except Exception as e:
+            ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
+            ind_out = mock_forecast("ind", ind_weather)
+            ind_out["location"] = ind_label
+            ind_out["lat"] = ind_lat
+            ind_out["lon"] = ind_lon
+            ind_out["model_source"] = "mock_fallback"
+            ind_out["model_error"] = str(e)
+    else:
+        ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
+        ind_out = mock_forecast("ind", ind_weather)
+        ind_out["location"] = ind_label
+        ind_out["lat"] = ind_lat
+        ind_out["lon"] = ind_lon
     ind_out["historical_baseline"] = _historical_baseline_from_actual_csv(
         req.ind_location_key, "ind", ind_out["timestamps"]
     )
