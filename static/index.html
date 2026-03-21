@@ -331,12 +331,8 @@
         <div class="sectionTitle">Train your own model</div>
         <div class="fileRow">
           <div>
-            <label>Training power CSV</label>
+            <label>Training combined CSV</label>
             <input id="trainDataFile" type="file" accept=".csv" />
-          </div>
-          <div>
-            <label>Weather CSV for training</label>
-            <input id="trainWeatherFile" type="file" accept=".csv" />
           </div>
           <div>
             <label>Notes / Parameters</label>
@@ -465,6 +461,11 @@
   document.getElementById("model").addEventListener("change", showHideByModel);
   document.getElementById("resInputSource").addEventListener("change", updateResUploadUI);
   showHideByModel();
+
+  const trainHint = document.querySelector("#trainBox .hint");
+  if(trainHint){
+    trainHint.textContent = "Upload one CSV containing: datetime, TOTAL_CONSUMPTION (kWh), Temp (C), Rel Hum (%), Dew Point Temp (C).";
+  }
 
   function updateResUploadUI(){
     const source = document.getElementById("resInputSource").value;
@@ -605,15 +606,11 @@
   // --------------------
   async function trainModel(){
     const fileInput = document.getElementById("trainDataFile");
-    const weatherFileInput = document.getElementById("trainWeatherFile");
     const notes = document.getElementById("trainNotes").value || "";
 
     const fd = new FormData();
     if(fileInput.files && fileInput.files.length > 0){
       fd.append("file", fileInput.files[0]);
-    }
-    if(weatherFileInput.files && weatherFileInput.files.length > 0){
-      fd.append("weather_file", weatherFileInput.files[0]);
     }
     fd.append("notes", notes);
 
