@@ -346,7 +346,7 @@
         </div>
       </div>
 
-      <div class="btnRow">
+      <div id="mainActionRow" class="btnRow">
         <button id="runBtn" onclick="run()">Run</button>
         <button class="secondary" onclick="downloadCSV()">Download CSV</button>
       </div>
@@ -450,6 +450,7 @@
 
     // train
     document.getElementById("trainBox").classList.toggle("hidden", m !== "train");
+    document.getElementById("mainActionRow").classList.toggle("hidden", m === "train");
 
     // output panels
     document.getElementById("singlePanel").classList.toggle("hidden", m === "all");
