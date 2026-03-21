@@ -32,10 +32,23 @@ FEATURE_COLS = [
 ]
 
 
+def _clean_column_name(value: str) -> str:
+    text = str(value).strip()
+    replacements = {
+        "脗": "",
+        "Â": "",
+        "掳": "°",
+        "(C)": "(°C)",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return text.strip()
+
+
 def _find_first_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    cols_lower = {str(c).lower().strip(): c for c in df.columns}
+    cols_lower = {_clean_column_name(c).lower(): c for c in df.columns}
     for candidate in candidates:
-        key = candidate.lower().strip()
+        key = _clean_column_name(candidate).lower()
         if key in cols_lower:
             return cols_lower[key]
     return None
@@ -43,12 +56,12 @@ def _find_first_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
 
 def _prepare_training_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     work = df.copy()
-    work.columns = [str(c).replace("Â", "").replace("脗", "").strip() for c in work.columns]
+    work.columns = [_clean_column_name(c) for c in work.columns]
 
     datetime_col = _find_first_col(work, ["datetime", "timestamp", "date_time", "date/time"])
     if datetime_col is None:
         raise ValueError(
-            "Could not find datetime column. Expected one of: datetime, timestamp, date_time, date/time."
+            "Could not find datetime column. Expected one of ['datetime', 'timestamp', 'date_time', 'date/time']."
         )
 
     target_col = _find_first_col(
@@ -56,7 +69,7 @@ def _prepare_training_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
         [
             "TOTAL_CONSUMPTION (kWh)",
             "Total Consumption (kWh)",
-            "total_consumption (kwh)",
+            "total_consumption (kWh)",
             "total_consumption_kwh",
             "load",
             "kwh",
@@ -65,12 +78,12 @@ def _prepare_training_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     if target_col is None:
         raise ValueError("Could not find target load column.")
 
-    temp_col = _find_first_col(work, ["Temp (°C)", "Temp (C)", "temperature_C", "temp_c", "temp"])
+    temp_col = _find_first_col(work, ["Temp (°C)", "temperature_C", "temp_c", "temp"])
     hum_col = _find_first_col(work, ["Rel Hum (%)", "relative_humidity_pct", "humidity_percent", "humidity"])
-    dew_col = _find_first_col(work, ["Dew Point Temp (°C)", "Dew Point Temp (C)", "dewpoint", "dewpoint_c"])
+    dew_col = _find_first_col(work, ["Dew Point Temp (°C)", "dewpoint", "dewpoint_c"])
 
     if temp_col is None or hum_col is None:
-        raise ValueError("Training data must include temperature and humidity columns.")
+        raise ValueError("Combined CSV must include temperature and humidity columns.")
 
     work["datetime"] = pd.to_datetime(work[datetime_col].astype(str).str.strip(), errors="coerce")
     work = work.dropna(subset=["datetime"]).drop_duplicates(subset="datetime").sort_values("datetime")
@@ -96,8 +109,8 @@ def _prepare_training_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
 
     work[["temp", "humidity", "dewpoint"]] = work[["temp", "humidity", "dewpoint"]].ffill().bfill()
     work = work.dropna(subset=["Total Consumption (kWh)"])
-    if len(work) < INPUT_WINDOW + OUTPUT_WINDOW + 24:
-        raise ValueError("Need more hourly rows for LSTM training. Upload at least 216 clean rows.")
+    if len(work) < INPUT_WINDOW + OUTPUT_WINDOW + 1:
+        raise ValueError("Need at least 193 clean hourly rows to train this 168->24 LSTM.")
 
     work["hour_sin"] = np.sin(2 * np.pi * work.index.hour / 24.0)
     work["hour_cos"] = np.cos(2 * np.pi * work.index.hour / 24.0)
@@ -113,9 +126,9 @@ def _df_to_X_y(X_data, y_data, timestamps, window_size=INPUT_WINDOW, forecast_ho
     X_out, y_out, ts_out = [], [], []
     limit = len(X_data) - window_size - forecast_horizon + 1
     for i in range(limit):
-        X_out.append(X_data[i:i + window_size])
-        y_out.append(y_data[i + window_size:i + window_size + forecast_horizon])
-        ts_out.append(timestamps[i + window_size:i + window_size + forecast_horizon])
+        X_out.append(X_data[i : i + window_size])
+        y_out.append(y_data[i + window_size : i + window_size + forecast_horizon])
+        ts_out.append(timestamps[i + window_size : i + window_size + forecast_horizon])
     return np.array(X_out), np.array(y_out), np.array(ts_out, dtype=object)
 
 
@@ -198,7 +211,9 @@ def train_user_lstm(
     active_model_path = os.path.join(output_dir, "toronto_test.keras")
     scaler_x_path = os.path.join(output_dir, "scaler_x.save")
     scaler_y_path = os.path.join(output_dir, "scaler_y.save")
-    checkpoint_path = active_model_path
+    alias_model_path = os.path.join(output_dir, "userModel.keras")
+    alias_scaler_x_path = os.path.join(output_dir, "scaler_x.save")
+    alias_scaler_y_path = os.path.join(output_dir, "scaler_y.save")
 
     model.compile(
         loss=MeanSquaredError(),
@@ -212,15 +227,21 @@ def train_user_lstm(
         epochs=max(1, int(epochs)),
         batch_size=32,
         callbacks=[
-            ModelCheckpoint(checkpoint_path, save_best_only=True),
+            ModelCheckpoint(active_model_path, save_best_only=True),
             EarlyStopping(monitor="val_loss", patience=15, restore_best_weights=True),
         ],
         verbose=0,
     )
 
     model.save(active_model_path)
+    if active_model_path != alias_model_path:
+        model.save(alias_model_path)
     joblib.dump(scaler_x, scaler_x_path)
     joblib.dump(scaler_y, scaler_y_path)
+    if scaler_x_path != alias_scaler_x_path:
+        joblib.dump(scaler_x, alias_scaler_x_path)
+    if scaler_y_path != alias_scaler_y_path:
+        joblib.dump(scaler_y, alias_scaler_y_path)
 
     model1 = load_model(active_model_path)
     train_preds = model1.predict(X_train, verbose=0)
@@ -253,6 +274,34 @@ def train_user_lstm(
     validation_timestamps = [pd.Timestamp(ts).isoformat(timespec="minutes") for ts in ts_val[sample_idx].tolist()]
     validation_actual = scaler_y.inverse_transform(y_val[sample_idx].reshape(-1, 1)).flatten().tolist()
     validation_predicted = scaler_y.inverse_transform(val_preds[sample_idx].reshape(-1, 1)).flatten().tolist()
+
+    frontend_metrics = {
+        "dataFileName": source_name,
+        "inputWindow": INPUT_WINDOW,
+        "outputWindow": OUTPUT_WINDOW,
+        "epochs": max(1, int(epochs)),
+        "files": {
+            "bestCheckpointFile": active_model_path,
+            "finalModelFile": active_model_path,
+            "scalerXFile": scaler_x_path,
+            "scalerYFile": scaler_y_path,
+        },
+        "validation": {
+            "nMAPE": None if np.isnan(val_nmape) else float(val_nmape),
+            "RSE": None if np.isnan(val_rse) else float(val_rse),
+            "MASE": None if np.isnan(val_mase) else float(val_mase),
+            "R2": float(val_r2),
+            "RMSE": float(val_rmse),
+        },
+        "test": {
+            "nMAPE": None if np.isnan(test_nmape) else float(test_nmape),
+            "RSE": None if np.isnan(test_rse) else float(test_rse),
+            "MASE": None if np.isnan(test_mase) else float(test_mase),
+            "R2": float(test_r2),
+            "RMSE": float(test_rmse),
+        },
+        "futureForecastKwh": [float(v) for v in future_forecast_kwh],
+    }
 
     return {
         "ok": True,
@@ -288,6 +337,7 @@ def train_user_lstm(
             "rmse": round(test_rmse, 4),
         },
         "future_forecast_kwh": [round(float(v), 4) for v in future_forecast_kwh],
+        "frontend_metrics": frontend_metrics,
         "model_path": active_model_path,
         "scaler_x_path": scaler_x_path,
         "scaler_y_path": scaler_y_path,
