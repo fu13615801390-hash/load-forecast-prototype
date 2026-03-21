@@ -1,0 +1,28 @@
+{
+  "time_col": "Date/Time (LST)",
+  "target_col": "TOTAL_CONSUMPTION (kWh)",
+  "feature_cols": [
+    "Temp (\u00b0C)",
+    "Rel Hum (%)",
+    "Dew Point Temp (\u00b0C)",
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos",
+    "month_sin",
+    "month_cos",
+    "is_weekend",
+    "HDD",
+    "CDD"
+  ],
+  "past_hours": 72,
+  "future_hours": 24,
+  "horizon": 24,
+  "batch_size": 64,
+  "epochs": 50,
+  "learning_rate": 0.001,
+  "base_temp_c": 18.0,
+  "training_data": "Commerical POWER AND WEATHER - 23-24 - Sheet1.csv",
+  "input_definition": "past 72h weather + future 24h weather",
+  "target_definition": "future 24h power consumption"
+}

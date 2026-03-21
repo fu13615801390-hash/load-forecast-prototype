@@ -30,6 +30,7 @@ RESIDENTIAL_BASELINE_CSV = os.getenv(
 )
 LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
 TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "_legacy_user_res_model.joblib")
+COMMERCIAL_MODEL_DIR = os.path.join("models", "commercial")
 
 
 @app.get("/")
@@ -779,6 +780,33 @@ def _expand_to_horizon(values: list[float], horizon: int) -> list[float]:
     return out[:horizon]
 
 
+def _predict_commercial_24h(location_key: str) -> dict:
+    label, lat, lon = resolve_preset(location_key)
+    from ml import commercial_forecast  # type: ignore
+
+    forecast_df = commercial_forecast.forecast_next_24h_load(
+        lat=lat,
+        lon=lon,
+        model_dir=COMMERCIAL_MODEL_DIR,
+        timezone="America/Toronto",
+    )
+
+    ts = [pd.Timestamp(v).isoformat(timespec="minutes") for v in forecast_df["forecast_time"].tolist()]
+    yhat = [round(float(v), 2) for v in forecast_df["predicted_load_kWh"].tolist()]
+
+    return {
+        "module": "forecast_com_ml",
+        "sector": "com",
+        "unit": "kWh",
+        "timestamps": ts,
+        "predicted_load": yhat,
+        "location": label,
+        "lat": lat,
+        "lon": lon,
+        "model_source": "azure_commercial_cnn",
+    }
+
+
 # ----------------------------
 # Debug endpoints (VERY useful on Azure)
 # ----------------------------
@@ -1045,18 +1073,26 @@ def api_forecast_res(req: ModelRequest):
 @app.post("/api/forecast/com")
 def api_forecast_com(req: ModelRequest):
     """
-    Commercial: still mock (until you have com model).
+    Commercial forecast using the Azure CNN weather model when available.
     """
-    start = _parse_start(req.start_iso)
-    label, lat, lon = resolve_preset(req.location_key)
-    w = mock_weather(label, lat, lon, start, req.horizon_hours)
-
     sector = "com"
-    out = mock_forecast(sector, w)
+    try:
+        out = _predict_commercial_24h(req.location_key)
+    except Exception:
+        start = _parse_start(req.start_iso)
+        label, lat, lon = resolve_preset(req.location_key)
+        w = mock_weather(label, lat, lon, start, req.horizon_hours)
+        out = mock_forecast(sector, w)
+        out["location"] = label
+        out["lat"] = lat
+        out["lon"] = lon
+        out["model_source"] = "mock_fallback"
+
     baseline = _historical_baseline_from_actual_csv(req.location_key, sector, out["timestamps"])
     baseline_source = "actual_history_csv"
+    horizon = len(out["predicted_load"])
     if baseline is None and USE_PRED_HISTORY_BASELINE_FALLBACK:
-        baseline = _historical_baseline(req.location_key, sector, req.horizon_hours)
+        baseline = _historical_baseline(req.location_key, sector, horizon)
         baseline_source = "prediction_history_fallback"
     if baseline is None:
         baseline_source = "none"
@@ -1064,9 +1100,6 @@ def api_forecast_com(req: ModelRequest):
 
     out["historical_baseline"] = baseline
     out["baseline_source"] = baseline_source
-    out["location"] = label
-    out["lat"] = lat
-    out["lon"] = lon
     return out
 
 
@@ -1101,7 +1134,7 @@ def api_forecast_ind(req: ModelRequest):
 @app.post("/api/run_all")
 def api_run_all(req: AllRequest):
     """
-    Runs Residential (ML) + Commercial (mock) + Industrial (mock).
+    Runs Residential (ML) + Commercial + Industrial (mock).
     Each model uses its own location dropdown selection.
     """
     start = _parse_start(req.start_iso)
@@ -1144,10 +1177,27 @@ def api_run_all(req: AllRequest):
 
     res_weather = mock_weather(res_label, res_lat, res_lon, start, horizon)
 
-    # ---- Commercial (mock) ----
-    com_label, com_lat, com_lon = resolve_preset(req.com_location_key)
-    com_weather = mock_weather(com_label, com_lat, com_lon, start, horizon)
-    com_out = mock_forecast("com", com_weather)
+    # ---- Commercial ----
+    try:
+        com_out = _predict_commercial_24h(req.com_location_key)
+        com_label, com_lat, com_lon = resolve_preset(req.com_location_key)
+        com_weather = {
+            "module": "weather_model_driven",
+            "location": com_label,
+            "lat": com_lat,
+            "lon": com_lon,
+            "timestamps": com_out["timestamps"],
+            "temperature_C": [],
+            "relative_humidity_pct": [],
+        }
+    except Exception:
+        com_label, com_lat, com_lon = resolve_preset(req.com_location_key)
+        com_weather = mock_weather(com_label, com_lat, com_lon, start, horizon)
+        com_out = mock_forecast("com", com_weather)
+        com_out["location"] = com_label
+        com_out["lat"] = com_lat
+        com_out["lon"] = com_lon
+        com_out["model_source"] = "mock_fallback"
     com_out["historical_baseline"] = _historical_baseline_from_actual_csv(
         req.com_location_key, "com", com_out["timestamps"]
     )
