@@ -154,6 +154,12 @@ def _calculate_rmse(y_true_real, y_pred_real):
     return float(np.sqrt(np.mean((y_true_real - y_pred_real) ** 2)))
 
 
+def _fmt_metric(value: float | None, decimals: int = 6, suffix: str = "") -> str:
+    if value is None or np.isnan(value):
+        return f"n/a{suffix}"
+    return f"{float(value):.{decimals}f}{suffix}"
+
+
 def train_user_lstm(
     df: pd.DataFrame,
     output_dir: str,
@@ -214,13 +220,11 @@ def train_user_lstm(
         ]
     )
 
-    os.makedirs(output_dir, exist_ok=True)
-    active_model_path = os.path.join(output_dir, "toronto_test.keras")
-    scaler_x_path = os.path.join(output_dir, "scaler_x.save")
-    scaler_y_path = os.path.join(output_dir, "scaler_y.save")
-    alias_model_path = os.path.join(output_dir, "userModel.keras")
-    alias_scaler_x_path = os.path.join(output_dir, "scaler_x.save")
-    alias_scaler_y_path = os.path.join(output_dir, "scaler_y.save")
+    trained_dir = os.path.join(output_dir, "trained")
+    os.makedirs(trained_dir, exist_ok=True)
+    active_model_path = os.path.join(trained_dir, "userModel.keras")
+    scaler_x_path = os.path.join(trained_dir, "user_scaler_x.save")
+    scaler_y_path = os.path.join(trained_dir, "user_scaler_y.save")
 
     model.compile(
         loss=MeanSquaredError(),
@@ -241,14 +245,8 @@ def train_user_lstm(
     )
 
     model.save(active_model_path)
-    if active_model_path != alias_model_path:
-        model.save(alias_model_path)
     joblib.dump(scaler_x, scaler_x_path)
     joblib.dump(scaler_y, scaler_y_path)
-    if scaler_x_path != alias_scaler_x_path:
-        joblib.dump(scaler_x, alias_scaler_x_path)
-    if scaler_y_path != alias_scaler_y_path:
-        joblib.dump(scaler_y, alias_scaler_y_path)
 
     model1 = load_model(active_model_path)
     train_preds = model1.predict(X_train, verbose=0)
@@ -310,6 +308,25 @@ def train_user_lstm(
         "futureForecastKwh": [float(v) for v in future_forecast_kwh],
     }
 
+    metrics_text = "\n".join(
+        [
+            f"Validation nMAPE:    {_fmt_metric(val_nmape, 4, '%')}",
+            f"Validation RSE:      {_fmt_metric(val_rse, 6)}",
+            f"Validation MASE:     {_fmt_metric(val_mase, 6)}",
+            f"Validation R²:       {_fmt_metric(val_r2, 6)}",
+            f"Validation RMSE:     {_fmt_metric(val_rmse, 6)}",
+            "",
+            "Test Metrics",
+            f"Test nMAPE:          {_fmt_metric(test_nmape, 4, '%')}",
+            f"Test RSE:            {_fmt_metric(test_rse, 6)}",
+            f"Test MASE:           {_fmt_metric(test_mase, 6)}",
+            f"Test R²:             {_fmt_metric(test_r2, 6)}",
+            f"Test RMSE:           {_fmt_metric(test_rmse, 6)}",
+        ]
+    )
+
+    print(metrics_text)
+
     return {
         "ok": True,
         "module": "train_res_lstm",
@@ -343,6 +360,7 @@ def train_user_lstm(
             "r2": round(test_r2, 4),
             "rmse": round(test_rmse, 4),
         },
+        "metrics_text": metrics_text,
         "future_forecast_kwh": [round(float(v), 4) for v in future_forecast_kwh],
         "frontend_metrics": frontend_metrics,
         "model_path": active_model_path,

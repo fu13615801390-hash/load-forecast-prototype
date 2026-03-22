@@ -30,7 +30,7 @@ RESIDENTIAL_BASELINE_CSV = os.getenv(
     r"c:\Users\14184\Downloads\BV06 - Residential Energy Consumption Data (2020-2024) - Jan. 2020 (1).csv",
 )
 LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
-TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "_legacy_user_res_model.joblib")
+TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "userModel.keras")
 COMMERCIAL_MODEL_DIR = os.path.join("models", "commercial")
 DISPLAY_ENERGY_UNIT = "MWh"
 KWH_TO_MWH = 1.0 / 1000.0
@@ -895,10 +895,13 @@ def _predict_residential_with_user_model(
     timestamps_override: list[datetime] | None = None,
 ) -> list[float]:
     """
-    Legacy hook kept only so old call sites fall back cleanly.
-    The website train flow now overwrites the active Keras artifacts in models/.
+    Load the user-trained residential model from models/trained/.
     """
-    raise FileNotFoundError(f"Legacy trained user model path is disabled: {TRAINED_USER_MODEL_PATH}")
+    from ml import user_res_forecast  # type: ignore
+
+    window_rows = build_past_168_window(label, lat, lon, start)
+    yhat = user_res_forecast.predict_next_24(window_rows)
+    return _expand_to_horizon([float(v) for v in yhat], horizon_hours)
 
 
 def _expand_to_horizon(values: list[float], horizon: int) -> list[float]:
