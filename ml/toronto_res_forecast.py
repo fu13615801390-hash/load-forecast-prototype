@@ -27,15 +27,10 @@ _load_model = None
 
 def _paths():
     base_dir = os.path.dirname(os.path.dirname(__file__))
-    models_dir = os.path.join(base_dir, "models")
-    preferred_model = os.getenv("TORONTO_RES_KERAS_MODEL", "toronto_test.keras")
-    fallback_model = os.getenv("TORONTO_RES_KERAS_FALLBACK_MODEL", "toronto_final_model.keras")
+    models_dir = os.path.join(base_dir, "models", "residential_toronto")
     return {
         "models_dir": models_dir,
-        "model_candidates": [
-            os.path.join(models_dir, preferred_model),
-            os.path.join(models_dir, fallback_model),
-        ],
+        "model": os.path.join(models_dir, os.getenv("TORONTO_RES_KERAS_MODEL", "toronto_test.keras")),
         "sx": os.path.join(models_dir, "scaler_x.save"),
         "sy": os.path.join(models_dir, "scaler_y.save"),
     }
@@ -78,23 +73,18 @@ def _resolve_model_loader():
 
 def _resolve_model_path():
     paths = _paths()
-    for path in paths["model_candidates"]:
-        if os.path.isfile(path):
-            return path
+    if os.path.isfile(paths["model"]):
+        return paths["model"]
 
     models_dir = paths["models_dir"]
-    fallback_patterns = [
-        os.path.join(models_dir, "toronto*.keras"),
-        os.path.join(models_dir, "*.keras"),
-    ]
+    fallback_patterns = [os.path.join(models_dir, "toronto*.keras"), os.path.join(models_dir, "*.keras")]
     for pattern in fallback_patterns:
         matches = sorted(glob(pattern))
         for match in matches:
             if os.path.isfile(match):
                 return match
     raise FileNotFoundError(
-        "Missing Keras model file. Expected one of: "
-        + ", ".join(paths["model_candidates"])
+        "Missing Keras model file. Expected: " + paths["model"]
     )
 
 

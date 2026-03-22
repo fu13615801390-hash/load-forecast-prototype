@@ -16,10 +16,10 @@ _load_model = None
 
 def _paths():
     base_dir = os.path.dirname(os.path.dirname(__file__))
-    models_dir = os.path.join(base_dir, "models")
+    models_dir = os.path.join(base_dir, "models", "residential_toronto")
     return {
         "models_dir": models_dir,
-        "model": os.path.join(models_dir, "toronto_final_model.keras"),
+        "model": os.path.join(models_dir, "toronto_test.keras"),
         "sx": os.path.join(models_dir, "scaler_x.save"),
         "sy": os.path.join(models_dir, "scaler_y.save"),
     }
