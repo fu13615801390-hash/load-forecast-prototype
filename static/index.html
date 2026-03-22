@@ -295,7 +295,7 @@ MASE: 1.16
               <option value="uploaded_csv">Uploaded CSV</option>
             </select>
           </div>
-          <div id="resUploadControls">
+          <div id="resUploadControls" class="hidden">
             <div>
               <label>Weather CSV for Residential run</label>
               <input id="resWeatherFile" type="file" accept=".csv" />
@@ -327,7 +327,7 @@ MASE: 1.16
             <button class="secondary" onclick="downloadTrainedArtifacts()">Download Model Files</button>
           </div>
           <div id="trainMetricsBox" class="metricsBox hidden"></div>
-          <div class="hint">We will build one combined training CSV with: datetime, TOTAL_CONSUMPTION (kWh), Temp (掳C), Rel Hum (%), Dew Point Temp (掳C).</div>
+          <div class="hint">We will build one combined training CSV with: datetime, TOTAL_CONSUMPTION (kWh), Temp (C), Rel Hum (%), Dew Point Temp (C).</div>
         </div>
       </div>
 
@@ -347,9 +347,9 @@ MASE: 1.16
   <main class="card">
     <div class="mainTop">
       <div class="chip"><b>Date:</b> <span id="chipDate">--</span></div>
-      <div class="chip"><b>Output:</b> <span id="chipOut">鈥?/span></div>
-      <div class="chip"><b>Location:</b> <span id="chipLoc">鈥?/span></div>
-      <div class="chip"><b>Coords:</b> <span id="chipCoords">鈥?/span></div>
+      <div class="chip"><b>Output:</b> <span id="chipOut">--</span></div>
+      <div class="chip"><b>Location:</b> <span id="chipLoc">--</span></div>
+      <div class="chip"><b>Coords:</b> <span id="chipCoords">--</span></div>
     </div>
 
     <!-- Single chart panel -->
@@ -407,7 +407,7 @@ MASE: 1.16
     el.className = "status" + (type==="err" ? " err" : (type==="ok" ? " ok" : ""));
   }
 
-  function setChips({out="鈥?, loc="鈥?, coords="鈥?}){
+  function setChips({out="--", loc="--", coords="--"}){
     const date = arguments[0]?.date ?? "--";
     document.getElementById("chipOut").textContent = out;
     document.getElementById("chipLoc").textContent = loc;
@@ -724,7 +724,7 @@ MASE: 1.16
         const bundle = normalizeAllPayload(data);
 
         renderAll(bundle);
-        setChips({ out: "pipeline_all", loc: "Multiple", coords: "鈥? });
+        setChips({ out: "pipeline_all", loc: "Multiple", coords: "--" });
         document.getElementById("chipDate").textContent = formatDateRange(bundle.residential.forecast.timestamps);
       } else {
         renderSingle(mode, data);
@@ -757,7 +757,7 @@ MASE: 1.16
       };
     }
 
-    // If it returns older keys like {residential, ci} 鈥?fallback
+    // If it returns older keys like {residential, ci} fallback
     throw new Error("Unexpected ALL payload shape. Update backend to return residential/commercial/industrial bundle.");
   }
 
