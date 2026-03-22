@@ -256,6 +256,13 @@
           <option value="alberta">Alberta (Edmonton)</option>
           <option value="vancouver">Vancouver, BC</option>
         </select>
+        <div id="torontoResMetrics" class="metricsBox" style="margin-top:10px;">
+Toronto Model Metrics
+nMAPE: 6.93%
+R²: 0.895
+RSE: 0.105
+MASE: 1.16
+        </div>
       </div>
 
       <div id="comLocBox" class="hidden">
@@ -434,9 +441,11 @@
     document.getElementById("allPanel").classList.add("hidden");
 
     updateResUploadUI();
+    updateResidentialMetricsNote();
   }
 
   document.getElementById("model").addEventListener("change", showHideByModel);
+  document.getElementById("locRes").addEventListener("change", updateResidentialMetricsNote);
   document.getElementById("resInputSource").addEventListener("change", updateResUploadUI);
   showHideByModel();
 
@@ -448,6 +457,14 @@
   function updateResUploadUI(){
     const source = document.getElementById("resInputSource").value;
     document.getElementById("resUploadControls").classList.toggle("hidden", source !== "uploaded_csv");
+  }
+
+  function updateResidentialMetricsNote(){
+    const mode = document.getElementById("model").value;
+    const loc = document.getElementById("locRes").value;
+    const box = document.getElementById("torontoResMetrics");
+    if(!box) return;
+    box.classList.toggle("hidden", !(mode === "res" && loc === "toronto"));
   }
 
   function showTrainMetrics(text){
