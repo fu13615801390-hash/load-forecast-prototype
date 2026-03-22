@@ -209,6 +209,17 @@
     .hidden{ display:none !important; }
     .smallNote{ font-size:12px; color:var(--muted); margin-top:6px; }
     .fileRow{ display:grid; gap:8px; }
+    .metricsBox{
+      margin-top: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fafafa;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12.5px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
   </style>
 </head>
 
@@ -308,6 +319,7 @@
             <button onclick="trainModel()">Train Model</button>
             <button class="secondary" onclick="downloadCSV()">Download CSV</button>
           </div>
+          <div id="trainMetricsBox" class="metricsBox hidden"></div>
           <div class="hint">We will build one combined training CSV with: datetime, TOTAL_CONSUMPTION (kWh), Temp (°C), Rel Hum (%), Dew Point Temp (°C).</div>
         </div>
       </div>
@@ -436,6 +448,18 @@
   function updateResUploadUI(){
     const source = document.getElementById("resInputSource").value;
     document.getElementById("resUploadControls").classList.toggle("hidden", source !== "uploaded_csv");
+  }
+
+  function showTrainMetrics(text){
+    const box = document.getElementById("trainMetricsBox");
+    if(!box) return;
+    if(text && String(text).trim()){
+      box.textContent = String(text).trim();
+      box.classList.remove("hidden");
+    } else {
+      box.textContent = "";
+      box.classList.add("hidden");
+    }
   }
 
   function toTableHTML(headers, rows, maxRows=28){
@@ -581,6 +605,7 @@
     fd.append("notes", notes);
 
     setStatus("Submitting train request...");
+    showTrainMetrics("");
     try{
       const res = await fetch("/api/train", { method: "POST", body: fd });
       const data = await parseAPIResponse(res);
@@ -596,6 +621,7 @@
       const mergeText = merge ? ` Weather match: ${merge.weather_matched_rows}/${merge.merged_rows}.` : "";
       const combinedText = data.combined_training_csv ? ` Combined CSV: ${data.combined_training_csv}.` : "";
       setStatus((data.message || `Train request accepted (${rows} rows, ${cols} columns).`) + ` Input rows: ${inputRows}.` + metricText + mergeText + combinedText, "ok");
+      showTrainMetrics(data.metrics_text || "");
       setChips({
         out: data.module || "train_res_model",
         loc: data.filename || "No file",
@@ -620,6 +646,7 @@
         );
       }
     } catch(e){
+      showTrainMetrics("");
       setStatus("Train failed: " + e.message, "err");
     }
   }
