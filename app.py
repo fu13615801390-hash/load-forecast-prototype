@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import math
 import os
 import re
+import tempfile
 import requests
 import pandas as pd
 import io
@@ -13,6 +14,7 @@ import glob
 import numpy as np
 import joblib
 import uuid
+import zipfile
 
 app = FastAPI(title="Load Forecast Interface Prototype")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -1597,3 +1599,26 @@ async def api_train(
     result["combined_training_csv"] = combined_path
     result["combined_columns"] = [str(c) for c in df.columns]
     return result
+
+
+@app.get("/api/train/download_artifacts")
+def api_train_download_artifacts():
+    artifact_paths = [
+        os.path.join("models", "trained", "userModel.keras"),
+        os.path.join("models", "trained", "user_res_scaler_x.save"),
+        os.path.join("models", "trained", "user_res_scaler_y.save"),
+    ]
+    missing = [p for p in artifact_paths if not os.path.isfile(p)]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Missing trained artifact files: {missing}")
+
+    zip_path = os.path.join(tempfile.gettempdir(), f"user_res_training_artifacts_{uuid.uuid4().hex}.zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in artifact_paths:
+            zf.write(path, arcname=os.path.basename(path))
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename="user_res_training_artifacts.zip",
+    )

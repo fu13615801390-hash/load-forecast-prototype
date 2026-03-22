@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -317,10 +317,10 @@
           </div>
           <div class="row2">
             <button onclick="trainModel()">Train Model</button>
-            <button class="secondary" onclick="downloadCSV()">Download CSV</button>
+            <button class="secondary" onclick="downloadTrainedArtifacts()">Download Model Files</button>
           </div>
           <div id="trainMetricsBox" class="metricsBox hidden"></div>
-          <div class="hint">We will build one combined training CSV with: datetime, TOTAL_CONSUMPTION (kWh), Temp (°C), Rel Hum (%), Dew Point Temp (°C).</div>
+          <div class="hint">We will build one combined training CSV with: datetime, TOTAL_CONSUMPTION (kWh), Temp (掳C), Rel Hum (%), Dew Point Temp (掳C).</div>
         </div>
       </div>
 
@@ -340,9 +340,9 @@
   <main class="card">
     <div class="mainTop">
       <div class="chip"><b>Date:</b> <span id="chipDate">--</span></div>
-      <div class="chip"><b>Output:</b> <span id="chipOut">—</span></div>
-      <div class="chip"><b>Location:</b> <span id="chipLoc">—</span></div>
-      <div class="chip"><b>Coords:</b> <span id="chipCoords">—</span></div>
+      <div class="chip"><b>Output:</b> <span id="chipOut">鈥?/span></div>
+      <div class="chip"><b>Location:</b> <span id="chipLoc">鈥?/span></div>
+      <div class="chip"><b>Coords:</b> <span id="chipCoords">鈥?/span></div>
     </div>
 
     <!-- Single chart panel -->
@@ -400,7 +400,7 @@
     el.className = "status" + (type==="err" ? " err" : (type==="ok" ? " ok" : ""));
   }
 
-  function setChips({out="—", loc="—", coords="—"}){
+  function setChips({out="鈥?, loc="鈥?, coords="鈥?}){
     const date = arguments[0]?.date ?? "--";
     document.getElementById("chipOut").textContent = out;
     document.getElementById("chipLoc").textContent = loc;
@@ -707,7 +707,7 @@
         const bundle = normalizeAllPayload(data);
 
         renderAll(bundle);
-        setChips({ out: "pipeline_all", loc: "Multiple", coords: "—" });
+        setChips({ out: "pipeline_all", loc: "Multiple", coords: "鈥? });
         document.getElementById("chipDate").textContent = formatDateRange(bundle.residential.forecast.timestamps);
       } else {
         renderSingle(mode, data);
@@ -740,7 +740,7 @@
       };
     }
 
-    // If it returns older keys like {residential, ci} — fallback
+    // If it returns older keys like {residential, ci} 鈥?fallback
     throw new Error("Unexpected ALL payload shape. Update backend to return residential/commercial/industrial bundle.");
   }
 
@@ -764,7 +764,7 @@
       out: data.module || ("forecast_" + mode),
       loc: data.location || "",
       date: formatDateRange(data.timestamps),
-      coords: (data.lat != null && data.lon != null) ? `${data.lat}, ${data.lon}` : "—"
+      coords: (data.lat != null && data.lon != null) ? `${data.lat}, ${data.lon}` : "--"
     });
   }
 
@@ -813,6 +813,10 @@
   // --------------------
   // Download
   // --------------------
+  function downloadTrainedArtifacts(){
+    window.location.href = "/api/train/download_artifacts";
+  }
+
   function downloadCSV(){
     if(!lastResult){
       setStatus("Nothing to download yet. Run a forecast first.", "err");
