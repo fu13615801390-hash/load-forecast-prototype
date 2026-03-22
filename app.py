@@ -62,8 +62,8 @@ def health():
 PRESET_LOCATIONS = {
     "toronto":   {"label": "Toronto, ON",        "lat": 43.7001, "lon": -79.4163},
     "ontario":   {"label": "Ontario (Ottawa)",   "lat": 45.4211, "lon": -75.6903},
-    "alberta":   {"label": "Alberta (Edmonton)", "lat": 53.5501, "lon": -113.4687},
-    "vancouver": {"label": "Vancouver, BC",      "lat": 49.2497, "lon": -123.1193},
+    "alberta":   {"label": "Alberta",            "lat": 53.5501, "lon": -113.4687},
+    "vancouver": {"label": "British Columbia",   "lat": 49.2497, "lon": -123.1193},
 }
 
 OPENWEATHER_CURRENT_URL = "https://api.openweathermap.org/data/2.5/weather"
