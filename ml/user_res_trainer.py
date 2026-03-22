@@ -3,17 +3,8 @@ import os
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
-import joblib
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from tensorflow.keras.layers import Bidirectional, Dense, Dropout, InputLayer, LSTM
-from tensorflow.keras.losses import MeanSquaredError
-from tensorflow.keras.metrics import RootMeanSquaredError
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.optimizers import Adam
 
 INPUT_WINDOW = 168
 OUTPUT_WINDOW = 24
@@ -170,6 +161,22 @@ def train_user_lstm(
     notes: str = "",
     epochs: int = DEFAULT_EPOCHS,
 ):
+    try:
+        import joblib
+        from sklearn.metrics import mean_absolute_error, r2_score
+        from sklearn.preprocessing import MinMaxScaler
+        from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+        from tensorflow.keras.layers import Bidirectional, Dense, Dropout, InputLayer, LSTM
+        from tensorflow.keras.losses import MeanSquaredError
+        from tensorflow.keras.metrics import RootMeanSquaredError
+        from tensorflow.keras.models import Sequential, load_model
+        from tensorflow.keras.optimizers import Adam
+    except Exception as e:
+        raise RuntimeError(
+            "Training dependencies are not available in the current Python environment. "
+            "Install/repair tensorflow, scikit-learn, and joblib."
+        ) from e
+
     work, target_col = _prepare_training_dataframe(df)
 
     X_inputs = work[FEATURE_COLS].astype(float)
