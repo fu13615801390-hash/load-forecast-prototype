@@ -223,8 +223,8 @@ def train_user_lstm(
     trained_dir = os.path.join(output_dir, "trained")
     os.makedirs(trained_dir, exist_ok=True)
     active_model_path = os.path.join(trained_dir, "userModel.keras")
-    scaler_x_path = os.path.join(trained_dir, "user_scaler_x.save")
-    scaler_y_path = os.path.join(trained_dir, "user_scaler_y.save")
+    scaler_x_path = os.path.join(trained_dir, "user_res_scaler_x.save")
+    scaler_y_path = os.path.join(trained_dir, "user_res_scaler_y.save")
 
     model.compile(
         loss=MeanSquaredError(),

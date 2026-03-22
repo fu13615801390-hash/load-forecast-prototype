@@ -30,8 +30,8 @@ def _paths():
     return {
         "models_dir": models_dir,
         "model": os.path.join(models_dir, "userModel.keras"),
-        "sx": os.path.join(models_dir, "user_scaler_x.save"),
-        "sy": os.path.join(models_dir, "user_scaler_y.save"),
+        "sx": os.path.join(models_dir, "user_res_scaler_x.save"),
+        "sy": os.path.join(models_dir, "user_res_scaler_y.save"),
     }
 
 
