@@ -103,7 +103,7 @@ def fetch_weather(lat: float, lon: float, timezone: str = "America/Toronto") -> 
         "timezone": timezone,
     }
 
-    response = requests.get(url, params=params, timeout=30)
+    response = requests.get(url, params=params, timeout=60)
     response.raise_for_status()
     hourly = response.json()["hourly"]
 
