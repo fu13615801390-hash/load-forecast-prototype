@@ -1287,7 +1287,7 @@ def api_forecast_com(req: ModelRequest):
     sector = "com"
     try:
         out = _predict_commercial_24h(req.location_key)
-    except Exception:
+    except Exception as e:
         start = _parse_start(req.start_iso)
         label, lat, lon = resolve_preset(req.location_key)
         w = mock_weather(label, lat, lon, start, req.horizon_hours)
