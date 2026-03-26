@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 import os
 import re
@@ -15,6 +15,7 @@ import numpy as np
 import joblib
 import uuid
 import zipfile
+from zoneinfo import ZoneInfo
 
 app = FastAPI(title="Load Forecast Interface Prototype")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -37,6 +38,7 @@ COMMERCIAL_MODEL_DIR = os.path.join("models", "commercial")
 DISPLAY_ENERGY_UNIT = "MWh"
 KWH_TO_MWH = 1.0 / 1000.0
 KW_TO_MW = 1.0 / 1000.0
+APP_TIMEZONE = ZoneInfo("America/Toronto")
 
 
 @app.get("/")
@@ -53,7 +55,7 @@ def home():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "time": datetime.now().isoformat(timespec="seconds")}
+    return {"status": "ok", "time": _toronto_now().isoformat(timespec="seconds")}
 
 
 # ----------------------------
@@ -95,7 +97,15 @@ class AllRequest(BaseModel):
 def _parse_start(start_iso: str | None) -> datetime:
     if start_iso:
         return datetime.fromisoformat(start_iso)
-    return datetime.now().replace(minute=0, second=0, microsecond=0)
+    return _toronto_now().replace(minute=0, second=0, microsecond=0)
+
+
+def _toronto_now() -> datetime:
+    return datetime.now(APP_TIMEZONE).replace(tzinfo=None)
+
+
+def _toronto_naive_from_unix_timestamp(value: int | float) -> datetime:
+    return datetime.fromtimestamp(value, tz=timezone.utc).astimezone(APP_TIMEZONE).replace(tzinfo=None)
 
 
 def resolve_preset(key: str) -> tuple[str, float, float]:
@@ -125,7 +135,7 @@ def _fetch_openweather_current(lat: float, lon: float) -> dict | None:
         res.raise_for_status()
         data = res.json()
         return {
-            "timestamp_utc": datetime.fromtimestamp(int(data["dt"])),
+            "timestamp_utc": _toronto_naive_from_unix_timestamp(int(data["dt"])),
             "temp_c": float(data["main"]["temp"]),
             "relative_humidity_pct": float(data["main"]["humidity"]),
         }
@@ -152,7 +162,7 @@ def _fetch_openweather_forecast(lat: float, lon: float, start: datetime, horizon
 
         pts = []
         for it in items:
-            dt = datetime.fromtimestamp(int(it["dt"]))
+            dt = _toronto_naive_from_unix_timestamp(int(it["dt"]))
             temp = float(it["main"]["temp"])
             hum = float(it["main"]["humidity"])
             pts.append((dt, temp, hum))
