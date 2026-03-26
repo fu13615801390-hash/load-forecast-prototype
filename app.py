@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 import os
 import re
@@ -15,6 +15,7 @@ import numpy as np
 import joblib
 import uuid
 import zipfile
+from zoneinfo import ZoneInfo
 
 app = FastAPI(title="Load Forecast Interface Prototype")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -37,6 +38,8 @@ COMMERCIAL_MODEL_DIR = os.path.join("models", "commercial")
 DISPLAY_ENERGY_UNIT = "MWh"
 KWH_TO_MWH = 1.0 / 1000.0
 KW_TO_MW = 1.0 / 1000.0
+SOURCE_TIMEZONE = ZoneInfo("America/Toronto")
+EST_TIMEZONE = timezone(timedelta(hours=-5), name="EST")
 
 
 @app.get("/")
@@ -53,7 +56,7 @@ def home():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "time": datetime.now().isoformat(timespec="seconds")}
+    return {"status": "ok", "time": _to_est_iso(datetime.now(), timespec="seconds")}
 
 
 # ----------------------------
@@ -96,6 +99,38 @@ def _parse_start(start_iso: str | None) -> datetime:
     if start_iso:
         return datetime.fromisoformat(start_iso)
     return datetime.now().replace(minute=0, second=0, microsecond=0)
+
+
+def _to_est_iso(value, timespec: str = "minutes") -> str:
+    if hasattr(value, "to_pydatetime"):
+        dt = value.to_pydatetime()
+    elif isinstance(value, datetime):
+        dt = value
+    else:
+        dt = datetime.fromisoformat(str(value))
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=SOURCE_TIMEZONE)
+
+    return dt.astimezone(EST_TIMEZONE).isoformat(timespec=timespec)
+
+
+def _normalize_payload_est(payload):
+    if isinstance(payload, dict):
+        out = {}
+        for key, value in payload.items():
+            if key == "timestamps" and isinstance(value, list):
+                out[key] = [_to_est_iso(item) for item in value]
+            elif key == "start" and value is not None:
+                out[key] = _to_est_iso(value, timespec="minutes")
+            elif key == "time" and value is not None:
+                out[key] = _to_est_iso(value, timespec="seconds")
+            else:
+                out[key] = _normalize_payload_est(value)
+        return out
+    if isinstance(payload, list):
+        return [_normalize_payload_est(item) for item in payload]
+    return payload
 
 
 def resolve_preset(key: str) -> tuple[str, float, float]:
@@ -1059,7 +1094,7 @@ def list_locations():
 def api_weather(req: ModelRequest):
     start = _parse_start(req.start_iso)
     label, lat, lon = resolve_preset(req.location_key)
-    return mock_weather(label, lat, lon, start, req.horizon_hours)
+    return _normalize_payload_est(mock_weather(label, lat, lon, start, req.horizon_hours))
 
 
 @app.post("/api/upload/weather_csv")
@@ -1164,7 +1199,7 @@ def api_forecast_res_from_upload(file_id: str):
     weather_payload = _get_uploaded_weather(file_id)
     out = _forecast_res_with_weather_payload(weather_payload, location_key="toronto")
     out["input_source"] = "uploaded_csv"
-    return out
+    return _normalize_payload_est(out)
 
 
 @app.post("/api/forecast/com_from_upload/{file_id}")
@@ -1182,7 +1217,7 @@ def api_forecast_com_from_upload(file_id: str):
     out["lon"] = ""
     out["baseline_source"] = "none"
     out["historical_baseline"] = None
-    return _normalize_display_unit(out)
+    return _normalize_payload_est(_normalize_display_unit(out))
 
 
 @app.post("/api/forecast/ind_from_upload/{file_id}")
@@ -1200,7 +1235,7 @@ def api_forecast_ind_from_upload(file_id: str):
     out["lon"] = ""
     out["baseline_source"] = "none"
     out["historical_baseline"] = None
-    return _normalize_display_unit(out)
+    return _normalize_payload_est(_normalize_display_unit(out))
 
 
 @app.post("/api/run_all_from_upload/{file_id}")
@@ -1218,12 +1253,12 @@ def api_run_all_from_upload(file_id: str):
     com_out["historical_baseline"] = None
     ind_out["historical_baseline"] = None
 
-    return {
+    return _normalize_payload_est({
         "module": "pipeline_all_upload",
         "residential": {"forecast": res_out, "weather": w},
         "commercial": {"forecast": com_out, "weather": w},
         "industrial": {"forecast": ind_out, "weather": w},
-    }
+    })
 
 
 @app.post("/api/forecast/res")
@@ -1276,7 +1311,7 @@ def api_forecast_res(req: ModelRequest):
 
     # store history (use 24 horizon for ML)
     _update_history(req.location_key, "res", out["predicted_load"])
-    return _normalize_display_unit(out)
+    return _normalize_payload_est(_normalize_display_unit(out))
 
 
 @app.post("/api/forecast/com")
@@ -1310,7 +1345,7 @@ def api_forecast_com(req: ModelRequest):
 
     out["historical_baseline"] = baseline
     out["baseline_source"] = baseline_source
-    return _normalize_display_unit(out)
+    return _normalize_payload_est(_normalize_display_unit(out))
 
 
 @app.post("/api/forecast/ind")
@@ -1351,7 +1386,7 @@ def api_forecast_ind(req: ModelRequest):
 
     out["historical_baseline"] = baseline
     out["baseline_source"] = baseline_source
-    return _normalize_display_unit(out)
+    return _normalize_payload_est(_normalize_display_unit(out))
 
 
 @app.post("/api/run_all")
@@ -1475,14 +1510,14 @@ def api_run_all(req: AllRequest):
     _update_history(req.ind_location_key, "ind", ind_out["predicted_load"])
     ind_out = _normalize_display_unit(ind_out)
 
-    return {
+    return _normalize_payload_est({
         "module": "pipeline_all",
         "start": start.isoformat(timespec="minutes"),
         "horizon_hours": horizon,
         "residential": {"forecast": res_out, "weather": res_weather},
         "commercial": {"forecast": com_out, "weather": com_weather},
         "industrial": {"forecast": ind_out, "weather": ind_weather},
-    }
+    })
 
 
 @app.post("/api/train")
@@ -1598,7 +1633,7 @@ async def api_train(
     result["weather_merge"] = weather_merge_stats
     result["combined_training_csv"] = combined_path
     result["combined_columns"] = [str(c) for c in df.columns]
-    return result
+    return _normalize_payload_est(result)
 
 
 @app.get("/api/train/download_artifacts")
