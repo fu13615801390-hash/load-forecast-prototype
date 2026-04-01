@@ -191,6 +191,45 @@ def _fetch_openweather_forecast(lat: float, lon: float, start: datetime, horizon
         return None
 
 
+def _synthetic_weather_series(lat: float, lon: float, start: datetime, horizon_hours: int) -> tuple[list[float], list[float]]:
+    """
+    Deterministic fallback weather that still varies by location and season.
+    This keeps forecasts from collapsing to the exact same weather profile when
+    the live API is unavailable.
+    """
+    temps: list[float] = []
+    humidity: list[float] = []
+
+    lat_abs = abs(float(lat))
+    lon_abs = abs(float(lon))
+    coord_phase = math.radians((lat_abs * 3.7 + lon_abs * 1.9) % 360.0)
+    daily_amp = 5.0 + min(lat_abs / 18.0, 4.0)
+    seasonal_amp = 7.5 + min(lat_abs / 10.0, 6.0)
+    baseline = 14.0 - min(lat_abs / 7.5, 8.0) - min(lon_abs / 90.0, 2.0)
+    humidity_base = 58.0 + min(lon_abs / 10.0, 14.0) - min(lat_abs / 12.0, 7.0)
+
+    for i in range(horizon_hours):
+        t = start + timedelta(hours=i)
+        seasonal_angle = (t.timetuple().tm_yday / 365.25) * (2 * math.pi)
+        daily_angle = ((t.hour + (lon / 15.0)) / 24.0) * (2 * math.pi)
+
+        temp_val = (
+            baseline
+            + seasonal_amp * math.sin(seasonal_angle - 1.2 + coord_phase * 0.35)
+            + daily_amp * math.sin(daily_angle - math.pi / 2 + coord_phase)
+        )
+        rh_val = (
+            humidity_base
+            + 10.0 * math.cos(daily_angle + coord_phase * 0.7)
+            - 6.0 * math.sin(seasonal_angle + coord_phase * 0.2)
+        )
+
+        temps.append(round(temp_val, 2))
+        humidity.append(round(min(95.0, max(25.0, rh_val)), 2))
+
+    return temps, humidity
+
+
 def mock_weather(location_label: str, lat: float, lon: float, start: datetime, horizon_hours: int):
     """
     Weather provider with automatic fallback order:
@@ -213,12 +252,13 @@ def mock_weather(location_label: str, lat: float, lon: float, start: datetime, h
             # We reuse it for each horizon step until a forecast endpoint is added.
             temp_val = live["temp_c"]
             rh_val = live["relative_humidity_pct"]
-        else:
-            temp_val = 10 + 7 * math.sin((i / 24) * 2 * math.pi)
-            rh_val = 55 + 10 * math.cos((i / 24) * 2 * math.pi)
         ts.append(t.isoformat(timespec="minutes"))
-        temp.append(round(temp_val, 2))
-        rh.append(round(rh_val, 2))
+        if live is not None:
+            temp.append(round(temp_val, 2))
+            rh.append(round(rh_val, 2))
+
+    if live is None:
+        temp, rh = _synthetic_weather_series(lat, lon, start, horizon_hours)
 
     return {
         "module": "weather_openweather_current" if live is not None else "weather_mock",
