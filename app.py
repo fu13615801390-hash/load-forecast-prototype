@@ -17,7 +17,7 @@ import uuid
 import zipfile
 from zoneinfo import ZoneInfo
 
-app = FastAPI(title="Load Forecast Interface Prototype")
+app = FastAPI(title="Load Forecast Interface")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ----------------------------
