@@ -279,6 +279,7 @@ MASE: 1.16
           <option value="alberta">Alberta</option>
           <option value="vancouver">British Columbia</option>
         </select>
+        <div id="indMetricsBox" class="metricsBox" style="margin-top:10px;"></div>
       </div>
 
       <div id="resUploadBox">
@@ -438,10 +439,12 @@ MASE: 1.16
 
     updateResUploadUI();
     updateResidentialMetricsNote();
+    updateIndustrialMetricsNote();
   }
 
   document.getElementById("model").addEventListener("change", showHideByModel);
   document.getElementById("locRes").addEventListener("change", updateResidentialMetricsNote);
+  document.getElementById("locInd").addEventListener("change", updateIndustrialMetricsNote);
   document.getElementById("resInputSource").addEventListener("change", updateResUploadUI);
   showHideByModel();
 
@@ -461,6 +464,42 @@ MASE: 1.16
     const box = document.getElementById("torontoResMetrics");
     if(!box) return;
     box.classList.toggle("hidden", !(mode === "res" && loc === "toronto"));
+  }
+
+  function updateIndustrialMetricsNote(){
+    const mode = document.getElementById("model").value;
+    const loc = document.getElementById("locInd").value;
+    const box = document.getElementById("indMetricsBox");
+    if(!box) return;
+
+    const metricsByLocation = {
+      alberta: `Alberta Model Metrics
+Validation nMAPE: 2.87%
+Test nMAPE: 3.53%
+
+Validation RSE: 0.0127
+Validation MASE: 0.2451
+Validation R²: 0.9873
+
+Test RSE: 0.0188
+Test MASE: 0.2993
+Test R²: 0.9812`,
+      vancouver: `British Columbia Model Metrics
+Validation nMAPE: 3.82%
+Test nMAPE: 4.89%
+
+Validation RSE: 0.0126
+Validation MASE: 0.2241
+Validation R²: 0.9874
+
+Test RSE: 0.0209
+Test MASE: 0.2751
+Test R²: 0.9791`
+    };
+
+    const text = metricsByLocation[loc] || "";
+    box.textContent = text;
+    box.classList.toggle("hidden", !(mode === "ind" && text));
   }
 
   function showTrainMetrics(text){
