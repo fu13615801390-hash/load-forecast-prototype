@@ -85,7 +85,7 @@ class AllRequest(BaseModel):
     # Each model has its own dropdown / location key
     res_location_key: str = Field("toronto")
     com_location_key: str = Field("toronto")
-    ind_location_key: str = Field("alberta")
+    ind_location_key: str = Field("ontario")
 
     start_iso: str | None = Field(None)
     horizon_hours: int = Field(24, ge=1, le=168)
