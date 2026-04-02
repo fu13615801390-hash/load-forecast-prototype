@@ -276,7 +276,7 @@ MASE: 1.16
       <div id="indLocBox" class="hidden">
         <label>Industrial Location</label>
         <select id="locInd">
-          <option value="ontario" selected>Ontario (Ottawa)</option>
+          <option value="ontario" selected>Ontario</option>
           <option value="alberta">Alberta</option>
           <option value="vancouver">British Columbia</option>
         </select>
@@ -468,27 +468,15 @@ R²: 0.895
 RSE: 0.105
 MASE: 1.16`,
       alberta: `Alberta Model Metrics
-Validation nMAPE: 2.87%
-Test nMAPE: 3.53%
-
-Validation RSE: 0.0127
-Validation MASE: 0.2451
-Validation R²: 0.9873
-
-Test RSE: 0.0188
-Test MASE: 0.2993
-Test R²: 0.9812`,
+nMAPE: 3.53%
+R²: 0.9812
+RSE: 0.0188
+MASE: 0.2993`,
       vancouver: `British Columbia Model Metrics
-Validation nMAPE: 3.82%
-Test nMAPE: 4.89%
-
-Validation RSE: 0.0126
-Validation MASE: 0.2241
-Validation R²: 0.9874
-
-Test RSE: 0.0209
-Test MASE: 0.2751
-Test R²: 0.9791`
+nMAPE: 4.89%
+R²: 0.9791
+RSE: 0.0209
+MASE: 0.2751`
     };
 
     const text = metricsByLocation[loc] || "";
