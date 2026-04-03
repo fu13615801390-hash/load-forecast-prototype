@@ -35,6 +35,7 @@ RESIDENTIAL_BASELINE_CSV = os.getenv(
 LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
 TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "userModel.keras")
 COMMERCIAL_MODEL_DIR = os.path.join("models", "commercial")
+ONTARIO_INDUSTRIAL_MODEL_DIR = os.path.join("models", "ontario_industrial")
 DISPLAY_ENERGY_UNIT = "MWh"
 KWH_TO_MWH = 1.0 / 1000.0
 KW_TO_MW = 1.0 / 1000.0
@@ -1073,6 +1074,33 @@ def _predict_bc_24h(location_key: str, start: datetime) -> dict:
     }
 
 
+def _predict_ontario_industrial_24h(location_key: str) -> dict:
+    label, lat, lon = resolve_preset(location_key)
+    from ml import ontario_industrial_forecast  # type: ignore
+
+    forecast_df = ontario_industrial_forecast.forecast_next_24h_load(
+        lat=lat,
+        lon=lon,
+        model_dir=ONTARIO_INDUSTRIAL_MODEL_DIR,
+        timezone="America/Toronto",
+    )
+
+    ts = [pd.Timestamp(v).isoformat(timespec="minutes") for v in forecast_df["forecast_time"].tolist()]
+    yhat = [round(float(v), 2) for v in forecast_df["predicted_load_MW"].tolist()]
+
+    return {
+        "module": "forecast_ontario_industrial_ml",
+        "sector": "ind",
+        "unit": "MW",
+        "timestamps": ts,
+        "predicted_load": yhat,
+        "location": label,
+        "lat": lat,
+        "lon": lon,
+        "model_source": "azure_ontario_industrial_cnn",
+    }
+
+
 # ----------------------------
 # Debug endpoints (VERY useful on Azure)
 # ----------------------------
@@ -1387,12 +1415,24 @@ def api_forecast_com(req: ModelRequest):
 @app.post("/api/forecast/ind")
 def api_forecast_ind(req: ModelRequest):
     """
-    Industrial: uses model-backed forecasts for Alberta and British Columbia,
+    Industrial: uses model-backed forecasts for Ontario, Alberta, and British Columbia,
     with mock fallback for other locations or load failures.
     """
     start = _parse_start(req.start_iso)
     sector = "ind"
-    if req.location_key == "alberta":
+    if req.location_key == "ontario":
+        try:
+            out = _predict_ontario_industrial_24h(req.location_key)
+        except Exception as e:
+            label, lat, lon = resolve_preset(req.location_key)
+            w = mock_weather(label, lat, lon, start, req.horizon_hours)
+            out = mock_forecast(sector, w)
+            out["location"] = label
+            out["lat"] = lat
+            out["lon"] = lon
+            out["model_source"] = "mock_fallback"
+            out["model_error"] = str(e)
+    elif req.location_key == "alberta":
         try:
             out = _predict_alberta_24h(req.location_key, start)
         except Exception as e:
@@ -1521,7 +1561,27 @@ def api_run_all(req: AllRequest):
 
     # ---- Industrial ----
     ind_label, ind_lat, ind_lon = resolve_preset(req.ind_location_key)
-    if req.ind_location_key == "alberta":
+    if req.ind_location_key == "ontario":
+        try:
+            ind_out = _predict_ontario_industrial_24h(req.ind_location_key)
+            ind_weather = {
+                "module": "weather_model_driven",
+                "location": ind_label,
+                "lat": ind_lat,
+                "lon": ind_lon,
+                "timestamps": ind_out["timestamps"],
+                "temperature_C": [],
+                "relative_humidity_pct": [],
+            }
+        except Exception as e:
+            ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
+            ind_out = mock_forecast("ind", ind_weather)
+            ind_out["location"] = ind_label
+            ind_out["lat"] = ind_lat
+            ind_out["lon"] = ind_lon
+            ind_out["model_source"] = "mock_fallback"
+            ind_out["model_error"] = str(e)
+    elif req.ind_location_key == "alberta":
         try:
             ind_out = _predict_alberta_24h(req.ind_location_key, start)
             ind_weather = {
