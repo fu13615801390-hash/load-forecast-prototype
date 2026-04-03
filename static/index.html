@@ -315,10 +315,6 @@ MASE: 1.16
             <label>Training combined CSV</label>
             <input id="trainDataFile" type="file" accept=".csv" />
           </div>
-          <div>
-            <label>Notes / Parameters</label>
-            <textarea id="trainNotes" placeholder="Describe features, model type, etc..."></textarea>
-          </div>
           <div class="row2">
             <button onclick="trainModel()">Train Model</button>
             <button class="secondary" onclick="downloadTrainedArtifacts()">Download Model Files</button>
@@ -630,13 +626,11 @@ MASE: 0.2751`
   // --------------------
   async function trainModel(){
     const fileInput = document.getElementById("trainDataFile");
-    const notes = document.getElementById("trainNotes").value || "";
 
     const fd = new FormData();
     if(fileInput.files && fileInput.files.length > 0){
       fd.append("file", fileInput.files[0]);
     }
-    fd.append("notes", notes);
 
     setStatus("Submitting train request...");
     showTrainMetrics("");
