@@ -36,6 +36,10 @@ LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
 TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "userModel.keras")
 COMMERCIAL_MODEL_DIR = os.path.join("models", "commercial")
 ONTARIO_INDUSTRIAL_MODEL_DIR = os.path.join("models", "ontario_industrial")
+ALBERTA_COMMERCIAL_MODEL_DIR = os.path.join("models", "alberta_commercial")
+ALBERTA_INDUSTRIAL_MODEL_DIR = os.path.join("models", "alberta_industrial")
+BC_COMMERCIAL_MODEL_DIR = os.path.join("models", "bc_commercial")
+BC_INDUSTRIAL_MODEL_DIR = os.path.join("models", "bc_industrial")
 DISPLAY_ENERGY_UNIT = "MWh"
 KWH_TO_MWH = 1.0 / 1000.0
 KW_TO_MW = 1.0 / 1000.0
@@ -1007,28 +1011,65 @@ def _normalize_display_unit(payload: dict) -> dict:
 
 def _predict_commercial_24h(location_key: str) -> dict:
     label, lat, lon = resolve_preset(location_key)
-    from ml import commercial_forecast  # type: ignore
+    if location_key in {"toronto", "ontario"}:
+        from ml import commercial_forecast  # type: ignore
 
-    forecast_df = commercial_forecast.forecast_next_24h_load(
+        forecast_df = commercial_forecast.forecast_next_24h_load(
+            lat=lat,
+            lon=lon,
+            model_dir=COMMERCIAL_MODEL_DIR,
+            timezone="America/Toronto",
+        )
+
+        ts = [pd.Timestamp(v).isoformat(timespec="minutes") for v in forecast_df["forecast_time"].tolist()]
+        yhat = [round(float(v), 2) for v in forecast_df["predicted_load_kWh"].tolist()]
+
+        return {
+            "module": "forecast_com_ml",
+            "sector": "com",
+            "unit": "kWh",
+            "timestamps": ts,
+            "predicted_load": yhat,
+            "location": label,
+            "lat": lat,
+            "lon": lon,
+            "model_source": "azure_commercial_cnn",
+        }
+
+    from ml import provincial_dual_input_forecast  # type: ignore
+
+    if location_key == "alberta":
+        model_dir = ALBERTA_COMMERCIAL_MODEL_DIR
+        timezone_name = "America/Edmonton"
+        model_source = "azure_alberta_commercial_cnn"
+        module_name = "forecast_alberta_commercial_ml"
+    elif location_key == "vancouver":
+        model_dir = BC_COMMERCIAL_MODEL_DIR
+        timezone_name = "America/Vancouver"
+        model_source = "azure_bc_commercial_cnn"
+        module_name = "forecast_bc_commercial_ml"
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported commercial location key '{location_key}'.")
+
+    forecast_df = provincial_dual_input_forecast.forecast_next_24h_load(
         lat=lat,
         lon=lon,
-        model_dir=COMMERCIAL_MODEL_DIR,
-        timezone="America/Toronto",
+        model_dir=model_dir,
+        timezone=timezone_name,
     )
-
     ts = [pd.Timestamp(v).isoformat(timespec="minutes") for v in forecast_df["forecast_time"].tolist()]
-    yhat = [round(float(v), 2) for v in forecast_df["predicted_load_kWh"].tolist()]
+    yhat = [round(float(v), 2) for v in forecast_df["predicted_load"].tolist()]
 
     return {
-        "module": "forecast_com_ml",
+        "module": module_name,
         "sector": "com",
-        "unit": "kWh",
+        "unit": "MWh",
         "timestamps": ts,
         "predicted_load": yhat,
         "location": label,
         "lat": lat,
         "lon": lon,
-        "model_source": "azure_commercial_cnn",
+        "model_source": model_source,
     }
 
 
@@ -1098,6 +1139,45 @@ def _predict_ontario_industrial_24h(location_key: str) -> dict:
         "lat": lat,
         "lon": lon,
         "model_source": "azure_ontario_industrial_cnn",
+    }
+
+
+def _predict_provincial_industrial_24h(location_key: str) -> dict:
+    label, lat, lon = resolve_preset(location_key)
+    from ml import provincial_dual_input_forecast  # type: ignore
+
+    if location_key == "alberta":
+        model_dir = ALBERTA_INDUSTRIAL_MODEL_DIR
+        timezone_name = "America/Edmonton"
+        module_name = "forecast_alberta_industrial_ml"
+        model_source = "azure_alberta_industrial_cnn"
+    elif location_key == "vancouver":
+        model_dir = BC_INDUSTRIAL_MODEL_DIR
+        timezone_name = "America/Vancouver"
+        module_name = "forecast_bc_industrial_ml"
+        model_source = "azure_bc_industrial_cnn"
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported industrial location key '{location_key}'.")
+
+    forecast_df = provincial_dual_input_forecast.forecast_next_24h_load(
+        lat=lat,
+        lon=lon,
+        model_dir=model_dir,
+        timezone=timezone_name,
+    )
+    ts = [pd.Timestamp(v).isoformat(timespec="minutes") for v in forecast_df["forecast_time"].tolist()]
+    yhat = [round(float(v), 2) for v in forecast_df["predicted_load"].tolist()]
+
+    return {
+        "module": module_name,
+        "sector": "ind",
+        "unit": "MWh",
+        "timestamps": ts,
+        "predicted_load": yhat,
+        "location": label,
+        "lat": lat,
+        "lon": lon,
+        "model_source": model_source,
     }
 
 
@@ -1434,7 +1514,7 @@ def api_forecast_ind(req: ModelRequest):
             out["model_error"] = str(e)
     elif req.location_key == "alberta":
         try:
-            out = _predict_alberta_24h(req.location_key, start)
+            out = _predict_provincial_industrial_24h(req.location_key)
         except Exception as e:
             label, lat, lon = resolve_preset(req.location_key)
             w = mock_weather(label, lat, lon, start, req.horizon_hours)
@@ -1446,7 +1526,7 @@ def api_forecast_ind(req: ModelRequest):
             out["model_error"] = str(e)
     elif req.location_key == "vancouver":
         try:
-            out = _predict_bc_24h(req.location_key, start)
+            out = _predict_provincial_industrial_24h(req.location_key)
         except Exception as e:
             label, lat, lon = resolve_preset(req.location_key)
             w = mock_weather(label, lat, lon, start, req.horizon_hours)
@@ -1583,7 +1663,7 @@ def api_run_all(req: AllRequest):
             ind_out["model_error"] = str(e)
     elif req.ind_location_key == "alberta":
         try:
-            ind_out = _predict_alberta_24h(req.ind_location_key, start)
+            ind_out = _predict_provincial_industrial_24h(req.ind_location_key)
             ind_weather = {
                 "module": "weather_model_driven",
                 "location": ind_label,
@@ -1603,7 +1683,7 @@ def api_run_all(req: AllRequest):
             ind_out["model_error"] = str(e)
     elif req.ind_location_key == "vancouver":
         try:
-            ind_out = _predict_bc_24h(req.ind_location_key, start)
+            ind_out = _predict_provincial_industrial_24h(req.ind_location_key)
             ind_weather = {
                 "module": "weather_model_driven",
                 "location": ind_label,
