@@ -1847,7 +1847,6 @@ def api_run_all(req: AllRequest):
 async def api_train(
     file: UploadFile | None = File(default=None),
     weather_file: UploadFile | None = File(default=None),
-    sector: str = Form(default="res"),
     expect_rows: int | None = Form(default=None),
     auto_trim_to_expected: bool = Form(default=True),
     notes: str | None = Form(default=None),
@@ -1857,9 +1856,6 @@ async def api_train(
     This updates the artifacts used by the website forecast flow.
     """
     notes_text = (notes or "").strip()
-    sector_key = str(sector or "res").strip().lower()
-    if sector_key not in {"res", "com", "ind"}:
-        raise HTTPException(status_code=400, detail="Training sector must be one of: res, com, ind.")
 
     if file is None:
         raise HTTPException(status_code=400, detail="Please upload a training CSV file.")
@@ -1941,54 +1937,40 @@ async def api_train(
                 detail=f"Training CSV must contain exactly {expected} rows after merge/cleaning. Found {input_rows}.",
             )
 
-    if sector_key == "res":
-        try:
-            from ml.user_res_trainer import train_user_lstm  # type: ignore
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Unable to load Keras trainer: {e}")
+    try:
+        from ml.user_res_trainer import train_user_lstm  # type: ignore
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unable to load Keras trainer: {e}")
 
-        try:
-            result = train_user_lstm(
-                df=df,
-                output_dir="models",
-                source_name=file.filename or "uploaded.csv",
-                notes=notes_text,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Training failed: {e}")
-    else:
-        try:
-            from ml.user_sector_model import train_user_sector_model  # type: ignore
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Unable to load sector trainer: {e}")
-
-        try:
-            result = train_user_sector_model(
-                df=df,
-                output_dir=USER_TRAINED_SECTOR_DIRS[sector_key],
-                sector=sector_key,
-                source_name=file.filename or "uploaded.csv",
-                notes=notes_text,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Training failed: {e}")
+    try:
+        result = train_user_lstm(
+            df=df,
+            output_dir="models",
+            source_name=file.filename or "uploaded.csv",
+            notes=notes_text,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Training failed: {e}")
 
     result["input_rows"] = input_rows
     result["weather_merge"] = weather_merge_stats
     result["combined_training_csv"] = combined_path
     result["combined_columns"] = [str(c) for c in df.columns]
-    result["sector"] = sector_key
     return result
 
 
 @app.get("/api/train/download_artifacts")
-def api_train_download_artifacts(sector: str = "res"):
-    artifact_paths, filename = _user_model_artifact_paths_for_download(sector)
+def api_train_download_artifacts():
+    artifact_paths = [
+        os.path.join("models", "trained", "userModel.keras"),
+        os.path.join("models", "trained", "user_res_scaler_x.save"),
+        os.path.join("models", "trained", "user_res_scaler_y.save"),
+    ]
     missing = [p for p in artifact_paths if not os.path.isfile(p)]
     if missing:
         raise HTTPException(status_code=404, detail=f"Missing trained artifact files: {missing}")
 
-    zip_path = os.path.join(tempfile.gettempdir(), f"{_safe_filename_part(filename)}_{uuid.uuid4().hex}.zip")
+    zip_path = os.path.join(tempfile.gettempdir(), f"user_res_training_artifacts_{uuid.uuid4().hex}.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in artifact_paths:
             zf.write(path, arcname=os.path.basename(path))
@@ -1996,5 +1978,5 @@ def api_train_download_artifacts(sector: str = "res"):
     return FileResponse(
         zip_path,
         media_type="application/zip",
-        filename=filename,
+        filename="user_res_training_artifacts.zip",
     )

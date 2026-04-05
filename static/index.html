@@ -315,14 +315,6 @@ MASE: 1.16
         <div class="sectionTitle">Train your own model</div>
         <div class="fileRow">
           <div>
-            <label>Training sector</label>
-            <select id="trainSector">
-              <option value="res" selected>Residential</option>
-              <option value="com">Commercial</option>
-              <option value="ind">Industrial</option>
-            </select>
-          </div>
-          <div>
             <label>Training combined CSV</label>
             <input id="trainDataFile" type="file" accept=".csv" />
           </div>
@@ -450,11 +442,12 @@ MASE: 1.16
   document.getElementById("model").addEventListener("change", showHideByModel);
   document.getElementById("locRes").addEventListener("change", updateResidentialMetricsNote);
   document.getElementById("modelInputSource").addEventListener("change", updateWeatherUploadUI);
-  document.getElementById("trainSector").addEventListener("change", updateTrainHint);
   showHideByModel();
 
   const trainHint = document.querySelector("#trainBox .hint");
-  updateTrainHint();
+  if(trainHint){
+    trainHint.textContent = "Upload one CSV containing: datetime, TOTAL_CONSUMPTION (kWh), Temp (C), Rel Hum (%), Dew Point Temp (C).";
+  }
 
   function getActiveForecastMode(){
     const mode = document.getElementById("model").value;
@@ -478,13 +471,6 @@ MASE: 1.16
       const uploaded = uploadedWeatherState[mode];
       info.textContent = uploaded?.message || `No uploaded ${getForecastModeLabel(mode).toLowerCase()} weather CSV.`;
     }
-  }
-
-  function updateTrainHint(){
-    const sector = document.getElementById("trainSector")?.value || "res";
-    if(!trainHint) return;
-    const label = getForecastModeLabel(sector);
-    trainHint.textContent = `Upload one CSV for ${label.toLowerCase()} training containing: datetime, TOTAL_CONSUMPTION (kWh), Temp (C), Rel Hum (%), Dew Point Temp (C).`;
   }
 
   function updateResidentialMetricsNote(){
@@ -667,10 +653,8 @@ MASE: 0.2751`
   // --------------------
   async function trainModel(){
     const fileInput = document.getElementById("trainDataFile");
-    const sector = document.getElementById("trainSector").value;
 
     const fd = new FormData();
-    fd.append("sector", sector);
     if(fileInput.files && fileInput.files.length > 0){
       fd.append("file", fileInput.files[0]);
     }
@@ -694,7 +678,7 @@ MASE: 0.2751`
       setStatus((data.message || `Train request accepted (${rows} rows, ${cols} columns).`) + ` Input rows: ${inputRows}.` + metricText + mergeText + combinedText, "ok");
       showTrainMetrics(data.metrics_text || "");
       setChips({
-        out: data.module || `train_${sector}_model`,
+        out: data.module || "train_res_model",
         loc: data.filename || "No file",
         date: formatDateRange(data.validation?.timestamps || []),
         coords: hasMetrics ? `RMSE ${m.rmse}` : `${rows} rows`
@@ -906,8 +890,7 @@ MASE: 0.2751`
   // Download
   // --------------------
   function downloadTrainedArtifacts(){
-    const sector = document.getElementById("trainSector")?.value || "res";
-    window.location.href = "/api/train/download_artifacts?sector=" + encodeURIComponent(sector);
+    window.location.href = "/api/train/download_artifacts";
   }
 
   function downloadCSV(){
