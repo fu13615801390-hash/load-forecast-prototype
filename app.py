@@ -75,6 +75,10 @@ PRESET_LOCATIONS = {
 
 OPENWEATHER_CURRENT_URL = "https://api.openweathermap.org/data/2.5/weather"
 OPENWEATHER_FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
+WEATHER_HTTP_TIMEOUT = (
+    float(os.getenv("WEATHER_HTTP_CONNECT_TIMEOUT_SECONDS", "15")),
+    float(os.getenv("WEATHER_HTTP_READ_TIMEOUT_SECONDS", "180")),
+)
 
 
 # ----------------------------
@@ -136,7 +140,7 @@ def _fetch_openweather_current(lat: float, lon: float) -> dict | None:
 
     params = {"lat": lat, "lon": lon, "appid": api_key, "units": "metric"}
     try:
-        res = requests.get(OPENWEATHER_CURRENT_URL, params=params, timeout=10)
+        res = requests.get(OPENWEATHER_CURRENT_URL, params=params, timeout=WEATHER_HTTP_TIMEOUT)
         res.raise_for_status()
         data = res.json()
         return {
@@ -158,7 +162,7 @@ def _fetch_openweather_forecast(lat: float, lon: float, start: datetime, horizon
 
     params = {"lat": lat, "lon": lon, "appid": api_key, "units": "metric"}
     try:
-        res = requests.get(OPENWEATHER_FORECAST_URL, params=params, timeout=12)
+        res = requests.get(OPENWEATHER_FORECAST_URL, params=params, timeout=WEATHER_HTTP_TIMEOUT)
         res.raise_for_status()
         data = res.json()
         items = data.get("list", [])

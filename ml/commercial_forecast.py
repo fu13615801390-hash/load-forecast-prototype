@@ -12,6 +12,10 @@ import requests
 TEMP_COL = "Temp (\N{DEGREE SIGN}C)"
 HUMIDITY_COL = "Rel Hum (%)"
 DEWPOINT_COL = "Dew Point Temp (\N{DEGREE SIGN}C)"
+WEATHER_HTTP_TIMEOUT = (
+    float(os.getenv("WEATHER_HTTP_CONNECT_TIMEOUT_SECONDS", "15")),
+    float(os.getenv("WEATHER_HTTP_READ_TIMEOUT_SECONDS", "180")),
+)
 
 _MODEL = None
 _FEATURE_SCALER = None
@@ -103,7 +107,7 @@ def fetch_weather(lat: float, lon: float, timezone: str = "America/Toronto") -> 
         "timezone": timezone,
     }
 
-    response = requests.get(url, params=params, timeout=60)
+    response = requests.get(url, params=params, timeout=WEATHER_HTTP_TIMEOUT)
     response.raise_for_status()
     hourly = response.json()["hourly"]
 

@@ -12,6 +12,10 @@ import requests
 TEMP_COL = "Temp (\N{DEGREE SIGN}C)"
 HUMIDITY_COL = "Rel Hum (%)"
 WIND_COL = "Wind Spd (km/h)"
+WEATHER_HTTP_TIMEOUT = (
+    float(os.getenv("WEATHER_HTTP_CONNECT_TIMEOUT_SECONDS", "15")),
+    float(os.getenv("WEATHER_HTTP_READ_TIMEOUT_SECONDS", "180")),
+)
 
 _MODEL = None
 _FEATURE_SCALER = None
@@ -114,7 +118,7 @@ def fetch_weather(
         "wind_speed_unit": "kmh",
     }
 
-    response = requests.get(url, params=params, timeout=60)
+    response = requests.get(url, params=params, timeout=WEATHER_HTTP_TIMEOUT)
     response.raise_for_status()
     hourly = response.json()["hourly"]
 

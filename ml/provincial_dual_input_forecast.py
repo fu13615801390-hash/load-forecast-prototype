@@ -13,6 +13,10 @@ TEMP_COL = "Temp (\N{DEGREE SIGN}C)"
 HUMIDITY_COL = "Rel Hum (%)"
 DEWPOINT_COL = "Dew Point Temp (\N{DEGREE SIGN}C)"
 WIND_COL = "Wind Spd (km/h)"
+WEATHER_HTTP_TIMEOUT = (
+    float(os.getenv("WEATHER_HTTP_CONNECT_TIMEOUT_SECONDS", "15")),
+    float(os.getenv("WEATHER_HTTP_READ_TIMEOUT_SECONDS", "180")),
+)
 
 _ARTIFACT_CACHE: dict[str, tuple[object, object, object, dict]] = {}
 _LOAD_MODEL = None
@@ -117,7 +121,7 @@ def fetch_weather(
     if "wind_speed_10m" in hourly_fields:
         params["wind_speed_unit"] = "kmh"
 
-    response = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=60)
+    response = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=WEATHER_HTTP_TIMEOUT)
     response.raise_for_status()
     hourly = response.json()["hourly"]
 
