@@ -285,27 +285,27 @@ MASE: 1.16
         </select>
       </div>
 
-      <div id="resUploadBox">
-        <div class="sectionTitle">Residential CSV Input</div>
+      <div id="weatherUploadBox">
+        <div class="sectionTitle" id="weatherUploadTitle">Weather CSV Input</div>
         <div class="fileRow">
           <div>
-            <label>Residential input source</label>
-            <select id="resInputSource">
+            <label>Input source</label>
+            <select id="modelInputSource">
               <option value="live_api" selected>Live API weather</option>
               <option value="uploaded_csv">Uploaded CSV</option>
             </select>
           </div>
-          <div id="resUploadControls" class="hidden">
+          <div id="weatherUploadControls" class="hidden">
             <div>
-              <label>Weather CSV for Residential run</label>
-              <input id="resWeatherFile" type="file" accept=".csv" />
+              <label id="weatherUploadLabel">Weather CSV for forecast run</label>
+              <input id="weatherFile" type="file" accept=".csv" />
               <div class="hint">Columns: timestamp + temperature + humidity (accepted aliases supported).</div>
             </div>
             <div class="row2">
-              <button class="secondary" onclick="uploadResWeatherCSV()">Upload CSV</button>
-              <button class="secondary" onclick="clearResWeatherCSV()">Clear</button>
+              <button class="secondary" onclick="uploadWeatherCSV()">Upload CSV</button>
+              <button class="secondary" onclick="clearWeatherCSV()">Clear</button>
             </div>
-            <div class="smallNote" id="resUploadInfo">No uploaded residential weather CSV.</div>
+            <div class="smallNote" id="weatherUploadInfo">No uploaded weather CSV.</div>
           </div>
         </div>
       </div>
@@ -314,6 +314,14 @@ MASE: 1.16
       <div id="trainBox" class="hidden">
         <div class="sectionTitle">Train your own model</div>
         <div class="fileRow">
+          <div>
+            <label>Training sector</label>
+            <select id="trainSector">
+              <option value="res" selected>Residential</option>
+              <option value="com">Commercial</option>
+              <option value="ind">Industrial</option>
+            </select>
+          </div>
           <div>
             <label>Training combined CSV</label>
             <input id="trainDataFile" type="file" accept=".csv" />
@@ -391,7 +399,7 @@ MASE: 1.16
   // --------------------
   let charts = {};            // map canvasId -> Chart instance
   let lastResult = null;      // { mode, data }
-  let uploadedResFileId = null;
+  let uploadedWeatherState = { res: null, com: null, ind: null };
 
   // --------------------
   // UI helpers
@@ -425,7 +433,7 @@ MASE: 1.16
     document.getElementById("resLocBox").classList.toggle("hidden", m !== "res");
     document.getElementById("comLocBox").classList.toggle("hidden", m !== "com");
     document.getElementById("indLocBox").classList.toggle("hidden", m !== "ind");
-    document.getElementById("resUploadBox").classList.toggle("hidden", m !== "res");
+    document.getElementById("weatherUploadBox").classList.toggle("hidden", !["res", "com", "ind"].includes(m));
 
     // train
     document.getElementById("trainBox").classList.toggle("hidden", m !== "train");
@@ -435,23 +443,48 @@ MASE: 1.16
     document.getElementById("singlePanel").classList.remove("hidden");
     document.getElementById("allPanel").classList.add("hidden");
 
-    updateResUploadUI();
+    updateWeatherUploadUI();
     updateResidentialMetricsNote();
   }
 
   document.getElementById("model").addEventListener("change", showHideByModel);
   document.getElementById("locRes").addEventListener("change", updateResidentialMetricsNote);
-  document.getElementById("resInputSource").addEventListener("change", updateResUploadUI);
+  document.getElementById("modelInputSource").addEventListener("change", updateWeatherUploadUI);
+  document.getElementById("trainSector").addEventListener("change", updateTrainHint);
   showHideByModel();
 
   const trainHint = document.querySelector("#trainBox .hint");
-  if(trainHint){
-    trainHint.textContent = "Upload one CSV containing: datetime, TOTAL_CONSUMPTION (kWh), Temp (C), Rel Hum (%), Dew Point Temp (C).";
+  updateTrainHint();
+
+  function getActiveForecastMode(){
+    const mode = document.getElementById("model").value;
+    return ["res", "com", "ind"].includes(mode) ? mode : "res";
   }
 
-  function updateResUploadUI(){
-    const source = document.getElementById("resInputSource").value;
-    document.getElementById("resUploadControls").classList.toggle("hidden", source !== "uploaded_csv");
+  function getForecastModeLabel(mode){
+    return ({ res: "Residential", com: "Commercial", ind: "Industrial" })[mode] || "Forecast";
+  }
+
+  function updateWeatherUploadUI(){
+    const source = document.getElementById("modelInputSource").value;
+    const mode = getActiveForecastMode();
+    const title = document.getElementById("weatherUploadTitle");
+    const label = document.getElementById("weatherUploadLabel");
+    const info = document.getElementById("weatherUploadInfo");
+    document.getElementById("weatherUploadControls").classList.toggle("hidden", source !== "uploaded_csv");
+    if(title) title.textContent = `${getForecastModeLabel(mode)} CSV Input`;
+    if(label) label.textContent = `Weather CSV for ${getForecastModeLabel(mode)} run`;
+    if(info){
+      const uploaded = uploadedWeatherState[mode];
+      info.textContent = uploaded?.message || `No uploaded ${getForecastModeLabel(mode).toLowerCase()} weather CSV.`;
+    }
+  }
+
+  function updateTrainHint(){
+    const sector = document.getElementById("trainSector")?.value || "res";
+    if(!trainHint) return;
+    const label = getForecastModeLabel(sector);
+    trainHint.textContent = `Upload one CSV for ${label.toLowerCase()} training containing: datetime, TOTAL_CONSUMPTION (kWh), Temp (C), Rel Hum (%), Dew Point Temp (C).`;
   }
 
   function updateResidentialMetricsNote(){
@@ -594,33 +627,39 @@ MASE: 0.2751`
     throw new Error(`HTTP ${res.status}: Non-JSON response from server (${snippet})`);
   }
 
-  async function uploadResWeatherCSV(){
-    const fileInput = document.getElementById("resWeatherFile");
+  async function uploadWeatherCSV(){
+    const mode = getActiveForecastMode();
+    const label = getForecastModeLabel(mode);
+    const fileInput = document.getElementById("weatherFile");
     if(!fileInput.files || fileInput.files.length === 0){
-      setStatus("Please choose a residential weather CSV first.", "err");
+      setStatus(`Please choose a ${label.toLowerCase()} weather CSV first.`, "err");
       return;
     }
     const fd = new FormData();
     fd.append("file", fileInput.files[0]);
-    setStatus("Uploading residential weather CSV...");
+    setStatus(`Uploading ${label.toLowerCase()} weather CSV...`);
     try{
       const res = await fetch("/api/upload/weather_csv", { method: "POST", body: fd });
       const data = await parseAPIResponse(res);
       if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
-      uploadedResFileId = data.file_id;
-      document.getElementById("resUploadInfo").textContent =
-        `Uploaded: ${data.filename} | rows=${data.rows} | file_id=${String(data.file_id).slice(0,8)}...`;
-      setStatus("Residential weather CSV uploaded.", "ok");
+      uploadedWeatherState[mode] = {
+        fileId: data.file_id,
+        message: `Uploaded: ${data.filename} | rows=${data.rows} | file_id=${String(data.file_id).slice(0,8)}...`
+      };
+      document.getElementById("weatherUploadInfo").textContent = uploadedWeatherState[mode].message;
+      setStatus(`${label} weather CSV uploaded.`, "ok");
     } catch(e){
-      setStatus("Residential CSV upload failed: " + e.message, "err");
+      setStatus(`${label} CSV upload failed: ` + e.message, "err");
     }
   }
 
-  function clearResWeatherCSV(){
-    uploadedResFileId = null;
-    document.getElementById("resWeatherFile").value = "";
-    document.getElementById("resUploadInfo").textContent = "No uploaded residential weather CSV.";
-    setStatus("Residential weather CSV cleared.", "ok");
+  function clearWeatherCSV(){
+    const mode = getActiveForecastMode();
+    const label = getForecastModeLabel(mode);
+    uploadedWeatherState[mode] = null;
+    document.getElementById("weatherFile").value = "";
+    document.getElementById("weatherUploadInfo").textContent = `No uploaded ${label.toLowerCase()} weather CSV.`;
+    setStatus(`${label} weather CSV cleared.`, "ok");
   }
 
   // --------------------
@@ -628,8 +667,10 @@ MASE: 0.2751`
   // --------------------
   async function trainModel(){
     const fileInput = document.getElementById("trainDataFile");
+    const sector = document.getElementById("trainSector").value;
 
     const fd = new FormData();
+    fd.append("sector", sector);
     if(fileInput.files && fileInput.files.length > 0){
       fd.append("file", fileInput.files[0]);
     }
@@ -653,7 +694,7 @@ MASE: 0.2751`
       setStatus((data.message || `Train request accepted (${rows} rows, ${cols} columns).`) + ` Input rows: ${inputRows}.` + metricText + mergeText + combinedText, "ok");
       showTrainMetrics(data.metrics_text || "");
       setChips({
-        out: data.module || "train_res_model",
+        out: data.module || `train_${sector}_model`,
         loc: data.filename || "No file",
         date: formatDateRange(data.validation?.timestamps || []),
         coords: hasMetrics ? `RMSE ${m.rmse}` : `${rows} rows`
@@ -700,12 +741,13 @@ MASE: 0.2751`
       let url, body, fetchOptions;
 
       if(mode === "res"){
-        const source = document.getElementById("resInputSource").value;
+        const source = document.getElementById("modelInputSource").value;
         if(source === "uploaded_csv"){
-          if(!uploadedResFileId){
+          const uploadedId = uploadedWeatherState.res?.fileId;
+          if(!uploadedId){
             throw new Error("Select 'Uploaded CSV' requires uploading a residential weather CSV first.");
           }
-          url = "/api/forecast/res_from_upload/" + uploadedResFileId;
+          url = "/api/forecast/res_from_upload/" + uploadedId;
           fetchOptions = { method: "POST" };
         } else {
           url = "/api/forecast/res";
@@ -713,13 +755,33 @@ MASE: 0.2751`
           fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
         }
       } else if(mode === "com"){
-        url = "/api/forecast/com";
-        body = { location_key: document.getElementById("locCom").value, ...common };
-        fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        const source = document.getElementById("modelInputSource").value;
+        if(source === "uploaded_csv"){
+          const uploadedId = uploadedWeatherState.com?.fileId;
+          if(!uploadedId){
+            throw new Error("Select 'Uploaded CSV' requires uploading a commercial weather CSV first.");
+          }
+          url = "/api/forecast/com_from_upload/" + uploadedId;
+          fetchOptions = { method: "POST" };
+        } else {
+          url = "/api/forecast/com";
+          body = { location_key: document.getElementById("locCom").value, ...common };
+          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        }
       } else if(mode === "ind"){
-        url = "/api/forecast/ind";
-        body = { location_key: document.getElementById("locInd").value, ...common };
-        fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        const source = document.getElementById("modelInputSource").value;
+        if(source === "uploaded_csv"){
+          const uploadedId = uploadedWeatherState.ind?.fileId;
+          if(!uploadedId){
+            throw new Error("Select 'Uploaded CSV' requires uploading an industrial weather CSV first.");
+          }
+          url = "/api/forecast/ind_from_upload/" + uploadedId;
+          fetchOptions = { method: "POST" };
+        } else {
+          url = "/api/forecast/ind";
+          body = { location_key: document.getElementById("locInd").value, ...common };
+          fetchOptions = { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) };
+        }
       } else {
         throw new Error("Unsupported model selection.");
       }
@@ -844,7 +906,8 @@ MASE: 0.2751`
   // Download
   // --------------------
   function downloadTrainedArtifacts(){
-    window.location.href = "/api/train/download_artifacts";
+    const sector = document.getElementById("trainSector")?.value || "res";
+    window.location.href = "/api/train/download_artifacts?sector=" + encodeURIComponent(sector);
   }
 
   function downloadCSV(){

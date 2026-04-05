@@ -34,6 +34,8 @@ RESIDENTIAL_BASELINE_CSV = os.getenv(
 )
 LAST_RESIDENTIAL_BASELINE_PATH: str | None = None
 TRAINED_USER_MODEL_PATH = os.path.join("models", "trained", "userModel.keras")
+TRAINED_COM_MODEL_DIR = os.path.join("models", "trained_commercial")
+TRAINED_IND_MODEL_DIR = os.path.join("models", "trained_industrial")
 COMMERCIAL_MODEL_DIR = os.path.join("models", "commercial")
 ONTARIO_INDUSTRIAL_MODEL_DIR = os.path.join("models", "ontario_industrial")
 ALBERTA_COMMERCIAL_MODEL_DIR = os.path.join("models", "alberta_commercial")
@@ -44,6 +46,11 @@ DISPLAY_ENERGY_UNIT = "MWh"
 KWH_TO_MWH = 1.0 / 1000.0
 KW_TO_MW = 1.0 / 1000.0
 APP_TIMEZONE = ZoneInfo("America/Toronto")
+USER_TRAINED_SECTOR_DIRS = {
+    "res": os.path.join("models", "trained"),
+    "com": TRAINED_COM_MODEL_DIR,
+    "ind": TRAINED_IND_MODEL_DIR,
+}
 
 
 @app.get("/")
@@ -1013,6 +1020,63 @@ def _normalize_display_unit(payload: dict) -> dict:
     return payload
 
 
+def _predict_user_sector_with_weather_payload(
+    sector: str,
+    weather_payload: dict,
+    location: str,
+    lat: float | str,
+    lon: float | str,
+) -> dict:
+    from ml.user_sector_model import predict_user_sector_from_weather  # type: ignore
+
+    model_dir = USER_TRAINED_SECTOR_DIRS.get(sector)
+    if not model_dir:
+        raise ValueError(f"Unsupported user-trained sector '{sector}'.")
+
+    predicted = predict_user_sector_from_weather(weather_payload, model_dir)
+    return {
+        "module": f"forecast_{sector}_user_ml",
+        "sector": sector,
+        "unit": predicted["unit"],
+        "timestamps": predicted["timestamps"],
+        "predicted_load": predicted["predicted_load"],
+        "location": location,
+        "lat": lat,
+        "lon": lon,
+        "model_source": predicted["model_source"],
+    }
+
+
+def _user_model_artifact_paths_for_download(sector: str) -> tuple[list[str], str]:
+    sector_key = str(sector or "res").strip().lower()
+    if sector_key == "res":
+        return (
+            [
+                os.path.join("models", "trained", "userModel.keras"),
+                os.path.join("models", "trained", "user_res_scaler_x.save"),
+                os.path.join("models", "trained", "user_res_scaler_y.save"),
+            ],
+            "user_res_training_artifacts.zip",
+        )
+    if sector_key == "com":
+        return (
+            [
+                os.path.join(TRAINED_COM_MODEL_DIR, "model.joblib"),
+                os.path.join(TRAINED_COM_MODEL_DIR, "metadata.json"),
+            ],
+            "user_com_training_artifacts.zip",
+        )
+    if sector_key == "ind":
+        return (
+            [
+                os.path.join(TRAINED_IND_MODEL_DIR, "model.joblib"),
+                os.path.join(TRAINED_IND_MODEL_DIR, "metadata.json"),
+            ],
+            "user_ind_training_artifacts.zip",
+        )
+    raise HTTPException(status_code=400, detail=f"Unsupported training sector '{sector}'.")
+
+
 def _predict_commercial_24h(location_key: str) -> dict:
     label, lat, lon = resolve_preset(location_key)
     if location_key in {"toronto", "ontario"}:
@@ -1358,13 +1422,18 @@ def api_forecast_com_from_upload(file_id: str):
         "timestamps": weather_payload["timestamps"][:n],
         "temperature_C": weather_payload["temperature_C"][:n],
         "relative_humidity_pct": weather_payload["relative_humidity_pct"][:n],
+        "dew_point_C": (weather_payload.get("dew_point_C") or [])[:n],
     }
-    out = mock_forecast("com", w)
-    out["location"] = "Uploaded weather CSV"
-    out["lat"] = ""
-    out["lon"] = ""
+    try:
+        out = _predict_user_sector_with_weather_payload("com", w, "Uploaded weather CSV", "", "")
+    except Exception:
+        out = mock_forecast("com", w)
+        out["location"] = "Uploaded weather CSV"
+        out["lat"] = ""
+        out["lon"] = ""
     out["baseline_source"] = "none"
     out["historical_baseline"] = None
+    out["input_source"] = "uploaded_csv"
     return _normalize_display_unit(out)
 
 
@@ -1376,13 +1445,18 @@ def api_forecast_ind_from_upload(file_id: str):
         "timestamps": weather_payload["timestamps"][:n],
         "temperature_C": weather_payload["temperature_C"][:n],
         "relative_humidity_pct": weather_payload["relative_humidity_pct"][:n],
+        "dew_point_C": (weather_payload.get("dew_point_C") or [])[:n],
     }
-    out = mock_forecast("ind", w)
-    out["location"] = "Uploaded weather CSV"
-    out["lat"] = ""
-    out["lon"] = ""
+    try:
+        out = _predict_user_sector_with_weather_payload("ind", w, "Uploaded weather CSV", "", "")
+    except Exception:
+        out = mock_forecast("ind", w)
+        out["location"] = "Uploaded weather CSV"
+        out["lat"] = ""
+        out["lon"] = ""
     out["baseline_source"] = "none"
     out["historical_baseline"] = None
+    out["input_source"] = "uploaded_csv"
     return _normalize_display_unit(out)
 
 
@@ -1394,10 +1468,17 @@ def api_run_all_from_upload(file_id: str):
         "timestamps": weather_payload["timestamps"][:n],
         "temperature_C": weather_payload["temperature_C"][:n],
         "relative_humidity_pct": weather_payload["relative_humidity_pct"][:n],
+        "dew_point_C": (weather_payload.get("dew_point_C") or [])[:n],
     }
     res_out = _forecast_res_with_weather_payload(w, location_key="toronto")
-    com_out = _normalize_display_unit(mock_forecast("com", w))
-    ind_out = _normalize_display_unit(mock_forecast("ind", w))
+    try:
+        com_out = _normalize_display_unit(_predict_user_sector_with_weather_payload("com", w, "Uploaded weather CSV", "", ""))
+    except Exception:
+        com_out = _normalize_display_unit(mock_forecast("com", w))
+    try:
+        ind_out = _normalize_display_unit(_predict_user_sector_with_weather_payload("ind", w, "Uploaded weather CSV", "", ""))
+    except Exception:
+        ind_out = _normalize_display_unit(mock_forecast("ind", w))
     com_out["historical_baseline"] = None
     ind_out["historical_baseline"] = None
 
@@ -1468,18 +1549,25 @@ def api_forecast_com(req: ModelRequest):
     Commercial forecast using the Azure CNN weather model when available.
     """
     sector = "com"
+    start = _parse_start(req.start_iso)
+    label, lat, lon = resolve_preset(req.location_key)
     try:
-        out = _predict_commercial_24h(req.location_key)
-    except Exception as e:
-        start = _parse_start(req.start_iso)
-        label, lat, lon = resolve_preset(req.location_key)
         w = mock_weather(label, lat, lon, start, req.horizon_hours)
-        out = mock_forecast(sector, w)
-        out["location"] = label
-        out["lat"] = lat
-        out["lon"] = lon
-        out["model_source"] = "mock_fallback"
-        out["model_error"] = str(e)
+        out = _predict_user_sector_with_weather_payload(sector, w, label, lat, lon)
+        out["input_source"] = "live_api_or_fallback_weather"
+    except Exception:
+        try:
+            out = _predict_commercial_24h(req.location_key)
+            out["input_source"] = "model_weather_pipeline"
+        except Exception as e:
+            w = mock_weather(label, lat, lon, start, req.horizon_hours)
+            out = mock_forecast(sector, w)
+            out["location"] = label
+            out["lat"] = lat
+            out["lon"] = lon
+            out["model_source"] = "mock_fallback"
+            out["model_error"] = str(e)
+            out["input_source"] = "live_api_or_fallback_weather"
 
     baseline = _historical_baseline_from_actual_csv(req.location_key, sector, out["timestamps"])
     baseline_source = "actual_history_csv"
@@ -1504,49 +1592,58 @@ def api_forecast_ind(req: ModelRequest):
     """
     start = _parse_start(req.start_iso)
     sector = "ind"
-    if req.location_key == "ontario":
-        try:
-            out = _predict_ontario_industrial_24h(req.location_key)
-        except Exception as e:
-            label, lat, lon = resolve_preset(req.location_key)
+    label, lat, lon = resolve_preset(req.location_key)
+    try:
+        weather_payload = mock_weather(label, lat, lon, start, req.horizon_hours)
+        out = _predict_user_sector_with_weather_payload(sector, weather_payload, label, lat, lon)
+        out["input_source"] = "live_api_or_fallback_weather"
+    except Exception:
+        if req.location_key == "ontario":
+            try:
+                out = _predict_ontario_industrial_24h(req.location_key)
+                out["input_source"] = "model_weather_pipeline"
+            except Exception as e:
+                w = mock_weather(label, lat, lon, start, req.horizon_hours)
+                out = mock_forecast(sector, w)
+                out["location"] = label
+                out["lat"] = lat
+                out["lon"] = lon
+                out["model_source"] = "mock_fallback"
+                out["model_error"] = str(e)
+                out["input_source"] = "live_api_or_fallback_weather"
+        elif req.location_key == "alberta":
+            try:
+                out = _predict_provincial_industrial_24h(req.location_key)
+                out["input_source"] = "model_weather_pipeline"
+            except Exception as e:
+                w = mock_weather(label, lat, lon, start, req.horizon_hours)
+                out = mock_forecast(sector, w)
+                out["location"] = label
+                out["lat"] = lat
+                out["lon"] = lon
+                out["model_source"] = "mock_fallback"
+                out["model_error"] = str(e)
+                out["input_source"] = "live_api_or_fallback_weather"
+        elif req.location_key == "vancouver":
+            try:
+                out = _predict_provincial_industrial_24h(req.location_key)
+                out["input_source"] = "model_weather_pipeline"
+            except Exception as e:
+                w = mock_weather(label, lat, lon, start, req.horizon_hours)
+                out = mock_forecast(sector, w)
+                out["location"] = label
+                out["lat"] = lat
+                out["lon"] = lon
+                out["model_source"] = "mock_fallback"
+                out["model_error"] = str(e)
+                out["input_source"] = "live_api_or_fallback_weather"
+        else:
             w = mock_weather(label, lat, lon, start, req.horizon_hours)
             out = mock_forecast(sector, w)
             out["location"] = label
             out["lat"] = lat
             out["lon"] = lon
-            out["model_source"] = "mock_fallback"
-            out["model_error"] = str(e)
-    elif req.location_key == "alberta":
-        try:
-            out = _predict_provincial_industrial_24h(req.location_key)
-        except Exception as e:
-            label, lat, lon = resolve_preset(req.location_key)
-            w = mock_weather(label, lat, lon, start, req.horizon_hours)
-            out = mock_forecast(sector, w)
-            out["location"] = label
-            out["lat"] = lat
-            out["lon"] = lon
-            out["model_source"] = "mock_fallback"
-            out["model_error"] = str(e)
-    elif req.location_key == "vancouver":
-        try:
-            out = _predict_provincial_industrial_24h(req.location_key)
-        except Exception as e:
-            label, lat, lon = resolve_preset(req.location_key)
-            w = mock_weather(label, lat, lon, start, req.horizon_hours)
-            out = mock_forecast(sector, w)
-            out["location"] = label
-            out["lat"] = lat
-            out["lon"] = lon
-            out["model_source"] = "mock_fallback"
-            out["model_error"] = str(e)
-    else:
-        label, lat, lon = resolve_preset(req.location_key)
-        w = mock_weather(label, lat, lon, start, req.horizon_hours)
-        out = mock_forecast(sector, w)
-        out["location"] = label
-        out["lat"] = lat
-        out["lon"] = lon
+            out["input_source"] = "live_api_or_fallback_weather"
 
     baseline = _historical_baseline_from_actual_csv(req.location_key, sector, out["timestamps"])
     baseline_source = "actual_history_csv"
@@ -1610,27 +1707,32 @@ def api_run_all(req: AllRequest):
     res_weather = mock_weather(res_label, res_lat, res_lon, start, horizon)
 
     # ---- Commercial ----
+    com_label, com_lat, com_lon = resolve_preset(req.com_location_key)
+    com_weather = mock_weather(com_label, com_lat, com_lon, start, horizon)
     try:
-        com_out = _predict_commercial_24h(req.com_location_key)
-        com_label, com_lat, com_lon = resolve_preset(req.com_location_key)
-        com_weather = {
-            "module": "weather_model_driven",
-            "location": com_label,
-            "lat": com_lat,
-            "lon": com_lon,
-            "timestamps": com_out["timestamps"],
-            "temperature_C": [],
-            "relative_humidity_pct": [],
-        }
-    except Exception as e:
-        com_label, com_lat, com_lon = resolve_preset(req.com_location_key)
-        com_weather = mock_weather(com_label, com_lat, com_lon, start, horizon)
-        com_out = mock_forecast("com", com_weather)
-        com_out["location"] = com_label
-        com_out["lat"] = com_lat
-        com_out["lon"] = com_lon
-        com_out["model_source"] = "mock_fallback"
-        com_out["model_error"] = str(e)
+        com_out = _predict_user_sector_with_weather_payload("com", com_weather, com_label, com_lat, com_lon)
+        com_out["input_source"] = "live_api_or_fallback_weather"
+    except Exception:
+        try:
+            com_out = _predict_commercial_24h(req.com_location_key)
+            com_weather = {
+                "module": "weather_model_driven",
+                "location": com_label,
+                "lat": com_lat,
+                "lon": com_lon,
+                "timestamps": com_out["timestamps"],
+                "temperature_C": [],
+                "relative_humidity_pct": [],
+            }
+            com_out["input_source"] = "model_weather_pipeline"
+        except Exception as e:
+            com_out = mock_forecast("com", com_weather)
+            com_out["location"] = com_label
+            com_out["lat"] = com_lat
+            com_out["lon"] = com_lon
+            com_out["model_source"] = "mock_fallback"
+            com_out["model_error"] = str(e)
+            com_out["input_source"] = "live_api_or_fallback_weather"
     com_out["historical_baseline"] = _historical_baseline_from_actual_csv(
         req.com_location_key, "com", com_out["timestamps"]
     )
@@ -1645,72 +1747,80 @@ def api_run_all(req: AllRequest):
 
     # ---- Industrial ----
     ind_label, ind_lat, ind_lon = resolve_preset(req.ind_location_key)
-    if req.ind_location_key == "ontario":
-        try:
-            ind_out = _predict_ontario_industrial_24h(req.ind_location_key)
-            ind_weather = {
-                "module": "weather_model_driven",
-                "location": ind_label,
-                "lat": ind_lat,
-                "lon": ind_lon,
-                "timestamps": ind_out["timestamps"],
-                "temperature_C": [],
-                "relative_humidity_pct": [],
-            }
-        except Exception as e:
-            ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
+    ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
+    try:
+        ind_out = _predict_user_sector_with_weather_payload("ind", ind_weather, ind_label, ind_lat, ind_lon)
+        ind_out["input_source"] = "live_api_or_fallback_weather"
+    except Exception:
+        if req.ind_location_key == "ontario":
+            try:
+                ind_out = _predict_ontario_industrial_24h(req.ind_location_key)
+                ind_weather = {
+                    "module": "weather_model_driven",
+                    "location": ind_label,
+                    "lat": ind_lat,
+                    "lon": ind_lon,
+                    "timestamps": ind_out["timestamps"],
+                    "temperature_C": [],
+                    "relative_humidity_pct": [],
+                }
+                ind_out["input_source"] = "model_weather_pipeline"
+            except Exception as e:
+                ind_out = mock_forecast("ind", ind_weather)
+                ind_out["location"] = ind_label
+                ind_out["lat"] = ind_lat
+                ind_out["lon"] = ind_lon
+                ind_out["model_source"] = "mock_fallback"
+                ind_out["model_error"] = str(e)
+                ind_out["input_source"] = "live_api_or_fallback_weather"
+        elif req.ind_location_key == "alberta":
+            try:
+                ind_out = _predict_provincial_industrial_24h(req.ind_location_key)
+                ind_weather = {
+                    "module": "weather_model_driven",
+                    "location": ind_label,
+                    "lat": ind_lat,
+                    "lon": ind_lon,
+                    "timestamps": ind_out["timestamps"],
+                    "temperature_C": [],
+                    "relative_humidity_pct": [],
+                }
+                ind_out["input_source"] = "model_weather_pipeline"
+            except Exception as e:
+                ind_out = mock_forecast("ind", ind_weather)
+                ind_out["location"] = ind_label
+                ind_out["lat"] = ind_lat
+                ind_out["lon"] = ind_lon
+                ind_out["model_source"] = "mock_fallback"
+                ind_out["model_error"] = str(e)
+                ind_out["input_source"] = "live_api_or_fallback_weather"
+        elif req.ind_location_key == "vancouver":
+            try:
+                ind_out = _predict_provincial_industrial_24h(req.ind_location_key)
+                ind_weather = {
+                    "module": "weather_model_driven",
+                    "location": ind_label,
+                    "lat": ind_lat,
+                    "lon": ind_lon,
+                    "timestamps": ind_out["timestamps"],
+                    "temperature_C": [],
+                    "relative_humidity_pct": [],
+                }
+                ind_out["input_source"] = "model_weather_pipeline"
+            except Exception as e:
+                ind_out = mock_forecast("ind", ind_weather)
+                ind_out["location"] = ind_label
+                ind_out["lat"] = ind_lat
+                ind_out["lon"] = ind_lon
+                ind_out["model_source"] = "mock_fallback"
+                ind_out["model_error"] = str(e)
+                ind_out["input_source"] = "live_api_or_fallback_weather"
+        else:
             ind_out = mock_forecast("ind", ind_weather)
             ind_out["location"] = ind_label
             ind_out["lat"] = ind_lat
             ind_out["lon"] = ind_lon
-            ind_out["model_source"] = "mock_fallback"
-            ind_out["model_error"] = str(e)
-    elif req.ind_location_key == "alberta":
-        try:
-            ind_out = _predict_provincial_industrial_24h(req.ind_location_key)
-            ind_weather = {
-                "module": "weather_model_driven",
-                "location": ind_label,
-                "lat": ind_lat,
-                "lon": ind_lon,
-                "timestamps": ind_out["timestamps"],
-                "temperature_C": [],
-                "relative_humidity_pct": [],
-            }
-        except Exception as e:
-            ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
-            ind_out = mock_forecast("ind", ind_weather)
-            ind_out["location"] = ind_label
-            ind_out["lat"] = ind_lat
-            ind_out["lon"] = ind_lon
-            ind_out["model_source"] = "mock_fallback"
-            ind_out["model_error"] = str(e)
-    elif req.ind_location_key == "vancouver":
-        try:
-            ind_out = _predict_provincial_industrial_24h(req.ind_location_key)
-            ind_weather = {
-                "module": "weather_model_driven",
-                "location": ind_label,
-                "lat": ind_lat,
-                "lon": ind_lon,
-                "timestamps": ind_out["timestamps"],
-                "temperature_C": [],
-                "relative_humidity_pct": [],
-            }
-        except Exception as e:
-            ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
-            ind_out = mock_forecast("ind", ind_weather)
-            ind_out["location"] = ind_label
-            ind_out["lat"] = ind_lat
-            ind_out["lon"] = ind_lon
-            ind_out["model_source"] = "mock_fallback"
-            ind_out["model_error"] = str(e)
-    else:
-        ind_weather = mock_weather(ind_label, ind_lat, ind_lon, start, horizon)
-        ind_out = mock_forecast("ind", ind_weather)
-        ind_out["location"] = ind_label
-        ind_out["lat"] = ind_lat
-        ind_out["lon"] = ind_lon
+            ind_out["input_source"] = "live_api_or_fallback_weather"
     ind_out["historical_baseline"] = _historical_baseline_from_actual_csv(
         req.ind_location_key, "ind", ind_out["timestamps"]
     )
@@ -1737,6 +1847,7 @@ def api_run_all(req: AllRequest):
 async def api_train(
     file: UploadFile | None = File(default=None),
     weather_file: UploadFile | None = File(default=None),
+    sector: str = Form(default="res"),
     expect_rows: int | None = Form(default=None),
     auto_trim_to_expected: bool = Form(default=True),
     notes: str | None = Form(default=None),
@@ -1746,6 +1857,9 @@ async def api_train(
     This updates the artifacts used by the website forecast flow.
     """
     notes_text = (notes or "").strip()
+    sector_key = str(sector or "res").strip().lower()
+    if sector_key not in {"res", "com", "ind"}:
+        raise HTTPException(status_code=400, detail="Training sector must be one of: res, com, ind.")
 
     if file is None:
         raise HTTPException(status_code=400, detail="Please upload a training CSV file.")
@@ -1827,40 +1941,54 @@ async def api_train(
                 detail=f"Training CSV must contain exactly {expected} rows after merge/cleaning. Found {input_rows}.",
             )
 
-    try:
-        from ml.user_res_trainer import train_user_lstm  # type: ignore
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unable to load Keras trainer: {e}")
+    if sector_key == "res":
+        try:
+            from ml.user_res_trainer import train_user_lstm  # type: ignore
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Unable to load Keras trainer: {e}")
 
-    try:
-        result = train_user_lstm(
-            df=df,
-            output_dir="models",
-            source_name=file.filename or "uploaded.csv",
-            notes=notes_text,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Training failed: {e}")
+        try:
+            result = train_user_lstm(
+                df=df,
+                output_dir="models",
+                source_name=file.filename or "uploaded.csv",
+                notes=notes_text,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Training failed: {e}")
+    else:
+        try:
+            from ml.user_sector_model import train_user_sector_model  # type: ignore
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Unable to load sector trainer: {e}")
+
+        try:
+            result = train_user_sector_model(
+                df=df,
+                output_dir=USER_TRAINED_SECTOR_DIRS[sector_key],
+                sector=sector_key,
+                source_name=file.filename or "uploaded.csv",
+                notes=notes_text,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Training failed: {e}")
 
     result["input_rows"] = input_rows
     result["weather_merge"] = weather_merge_stats
     result["combined_training_csv"] = combined_path
     result["combined_columns"] = [str(c) for c in df.columns]
+    result["sector"] = sector_key
     return result
 
 
 @app.get("/api/train/download_artifacts")
-def api_train_download_artifacts():
-    artifact_paths = [
-        os.path.join("models", "trained", "userModel.keras"),
-        os.path.join("models", "trained", "user_res_scaler_x.save"),
-        os.path.join("models", "trained", "user_res_scaler_y.save"),
-    ]
+def api_train_download_artifacts(sector: str = "res"):
+    artifact_paths, filename = _user_model_artifact_paths_for_download(sector)
     missing = [p for p in artifact_paths if not os.path.isfile(p)]
     if missing:
         raise HTTPException(status_code=404, detail=f"Missing trained artifact files: {missing}")
 
-    zip_path = os.path.join(tempfile.gettempdir(), f"user_res_training_artifacts_{uuid.uuid4().hex}.zip")
+    zip_path = os.path.join(tempfile.gettempdir(), f"{_safe_filename_part(filename)}_{uuid.uuid4().hex}.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in artifact_paths:
             zf.write(path, arcname=os.path.basename(path))
@@ -1868,5 +1996,5 @@ def api_train_download_artifacts():
     return FileResponse(
         zip_path,
         media_type="application/zip",
-        filename="user_res_training_artifacts.zip",
+        filename=filename,
     )
