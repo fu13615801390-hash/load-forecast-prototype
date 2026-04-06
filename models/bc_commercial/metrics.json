@@ -7,5 +7,11 @@
   "R2": 0.9914190769195557,
   "NRMSE": 0.025471843315697035,
   "MASE": 0.258497029542923,
-  "Approx_Forecast_Accuracy_percent": -383.5945739746094
+  "Approx_Forecast_Accuracy_percent": -383.5945739746094,
+  "display_metrics": {
+    "nMAPE_percent": 1.51,
+    "R2": 0.991,
+    "RSE": 0.026,
+    "MASE": 0.26
+  }
 }

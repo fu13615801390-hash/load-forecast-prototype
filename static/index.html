@@ -274,6 +274,7 @@ MASE: 1.16
           <option value="alberta">Alberta</option>
           <option value="vancouver">British Columbia</option>
         </select>
+        <div id="commercialMetrics" class="metricsBox hidden" style="margin-top:10px;"></div>
       </div>
 
       <div id="indLocBox" class="hidden">
@@ -283,6 +284,7 @@ MASE: 1.16
           <option value="alberta">Alberta</option>
           <option value="vancouver">British Columbia</option>
         </select>
+        <div id="industrialMetrics" class="metricsBox hidden" style="margin-top:10px;"></div>
       </div>
 
       <div id="weatherUploadBox">
@@ -436,11 +438,13 @@ MASE: 1.16
     document.getElementById("allPanel").classList.add("hidden");
 
     updateWeatherUploadUI();
-    updateResidentialMetricsNote();
+    updateModelMetricsNotes();
   }
 
   document.getElementById("model").addEventListener("change", showHideByModel);
-  document.getElementById("locRes").addEventListener("change", updateResidentialMetricsNote);
+  document.getElementById("locRes").addEventListener("change", updateModelMetricsNotes);
+  document.getElementById("locCom").addEventListener("change", updateModelMetricsNotes);
+  document.getElementById("locInd").addEventListener("change", updateModelMetricsNotes);
   document.getElementById("modelInputSource").addEventListener("change", updateWeatherUploadUI);
   showHideByModel();
 
@@ -473,32 +477,81 @@ MASE: 1.16
     }
   }
 
-  function updateResidentialMetricsNote(){
+  function updateModelMetricsNotes(){
     const mode = document.getElementById("model").value;
-    const loc = document.getElementById("locRes").value;
-    const box = document.getElementById("torontoResMetrics");
-    if(!box) return;
-    const metricsByLocation = {
-      toronto: `Toronto Model Metrics
+    const metricsByMode = {
+      res: {
+        elementId: "torontoResMetrics",
+        selectedLocation: document.getElementById("locRes").value,
+        metricsByLocation: {
+          toronto: `Toronto Model Metrics
 nMAPE: 6.93%
 R²: 0.895
 RSE: 0.105
 MASE: 1.16`,
-      alberta: `Alberta Model Metrics
+          alberta: `Alberta Model Metrics
 nMAPE: 3.53%
 R²: 0.9812
 RSE: 0.0188
 MASE: 0.2993`,
-      vancouver: `British Columbia Model Metrics
+          vancouver: `British Columbia Model Metrics
 nMAPE: 4.89%
 R²: 0.9791
 RSE: 0.0209
 MASE: 0.2751`
+        }
+      },
+      com: {
+        elementId: "commercialMetrics",
+        selectedLocation: document.getElementById("locCom").value,
+        metricsByLocation: {
+          toronto: `Toronto Commercial Model Metrics
+nMAPE: 5.84%
+R²: 0.861
+RSE: 0.092
+MASE: 1.12`,
+          alberta: `Alberta Commercial Model Metrics
+nMAPE: 4.06%
+R²: 0.992
+RSE: 0.023
+MASE: 0.27`,
+          vancouver: `BC Commercial Model Metrics
+nMAPE: 1.51%
+R²: 0.991
+RSE: 0.026
+MASE: 0.26`
+        }
+      },
+      ind: {
+        elementId: "industrialMetrics",
+        selectedLocation: document.getElementById("locInd").value,
+        metricsByLocation: {
+          ontario: `Ontario Industrial Model Metrics
+nMAPE: 4.41%
+R²: 0.869
+RSE: 0.069
+MASE: 1.53`,
+          alberta: `Alberta Industrial Model Metrics
+nMAPE: 3.16%
+R²: 0.705
+RSE: 0.098
+MASE: 2.07`,
+          vancouver: `BC Industrial Model Metrics
+nMAPE: 3.46%
+R²: 0.919
+RSE: 0.050
+MASE: 0.77`
+        }
+      }
     };
 
-    const text = metricsByLocation[loc] || "";
-    box.textContent = text;
-    box.classList.toggle("hidden", !(mode === "res" && text));
+    Object.entries(metricsByMode).forEach(([key, cfg]) => {
+      const box = document.getElementById(cfg.elementId);
+      if(!box) return;
+      const text = cfg.metricsByLocation[cfg.selectedLocation] || "";
+      box.textContent = text;
+      box.classList.toggle("hidden", !(mode === key && text));
+    });
   }
 
   function showTrainMetrics(text){

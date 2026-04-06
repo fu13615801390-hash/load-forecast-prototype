@@ -1,0 +1,8 @@
+{
+  "display_metrics": {
+    "nMAPE_percent": 5.84,
+    "R2": 0.861,
+    "RSE": 0.092,
+    "MASE": 1.12
+  }
+}
