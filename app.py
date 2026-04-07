@@ -1068,12 +1068,12 @@ def _predict_residential_with_user_model(
     timestamps_override: list[datetime] | None = None,
 ) -> list[float]:
     """
-    Load the user-trained residential model from models/trained/.
+    Load the Toronto residential Keras model and matching scalers.
     """
-    from ml import user_res_forecast  # type: ignore
+    from ml import toronto_res_forecast  # type: ignore
 
     window_rows = build_past_168_window(label, lat, lon, start)
-    yhat = user_res_forecast.predict_next_24(window_rows)
+    yhat = toronto_res_forecast.predict_next_24(window_rows)
     return _expand_to_horizon([float(v) for v in yhat], horizon_hours)
 
 
