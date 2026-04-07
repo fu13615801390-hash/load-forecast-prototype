@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from threading import Lock
+from datetime import datetime, timedelta
 
 import joblib
 import numpy as np
@@ -20,6 +22,11 @@ WEATHER_HTTP_TIMEOUT = (
 
 _ARTIFACT_CACHE: dict[str, tuple[object, object, object, dict]] = {}
 _LOAD_MODEL = None
+_ARTIFACT_LOCK = Lock()
+_WEATHER_CACHE: dict[tuple, tuple[datetime, tuple[pd.DataFrame, pd.DataFrame]]] = {}
+_WEATHER_CACHE_LOCK = Lock()
+_HTTP_SESSION = requests.Session()
+WEATHER_CACHE_TTL_SECONDS = int(os.getenv("MODEL_WEATHER_CACHE_TTL_SECONDS", "300"))
 
 
 def build_time_features(df: pd.DataFrame, base_temp: float = 18.0) -> pd.DataFrame:
@@ -70,30 +77,55 @@ def _load_artifacts(model_dir: str | os.PathLike[str]):
     if cached is not None:
         return cached
 
-    model_candidates = [
-        model_dir / "cnn_weather_only_dual_input.keras",
-        model_dir / "best_model.keras",
-    ]
-    model_path = next((p for p in model_candidates if p.is_file()), model_candidates[0])
-    feature_scaler_path = model_dir / "feature_scaler.pkl"
-    target_scaler_path = model_dir / "target_scaler.pkl"
-    config_path = model_dir / "config.json"
+    with _ARTIFACT_LOCK:
+        cached = _ARTIFACT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
 
-    missing = [str(p) for p in (model_path, feature_scaler_path, target_scaler_path, config_path) if not p.is_file()]
-    if missing:
-        raise FileNotFoundError(f"Missing provincial dual-input model artifacts: {missing}")
+        model_candidates = [
+            model_dir / "cnn_weather_only_dual_input.keras",
+            model_dir / "best_model.keras",
+        ]
+        model_path = next((p for p in model_candidates if p.is_file()), model_candidates[0])
+        feature_scaler_path = model_dir / "feature_scaler.pkl"
+        target_scaler_path = model_dir / "target_scaler.pkl"
+        config_path = model_dir / "config.json"
 
-    with config_path.open("r", encoding="utf-8") as f:
-        config = json.load(f)
+        missing = [str(p) for p in (model_path, feature_scaler_path, target_scaler_path, config_path) if not p.is_file()]
+        if missing:
+            raise FileNotFoundError(f"Missing provincial dual-input model artifacts: {missing}")
 
-    model_loader = _resolve_model_loader()
-    model = model_loader(model_path)
-    feature_scaler = joblib.load(feature_scaler_path)
-    target_scaler = joblib.load(target_scaler_path)
+        with config_path.open("r", encoding="utf-8") as f:
+            config = json.load(f)
 
-    artifacts = (model, feature_scaler, target_scaler, config)
-    _ARTIFACT_CACHE[cache_key] = artifacts
-    return artifacts
+        model_loader = _resolve_model_loader()
+        model = model_loader(model_path)
+        feature_scaler = joblib.load(feature_scaler_path)
+        target_scaler = joblib.load(target_scaler_path)
+
+        artifacts = (model, feature_scaler, target_scaler, config)
+        _ARTIFACT_CACHE[cache_key] = artifacts
+        return artifacts
+
+
+def _get_cached_weather(cache_key: tuple):
+    now = datetime.now()
+    with _WEATHER_CACHE_LOCK:
+        cached = _WEATHER_CACHE.get(cache_key)
+        if cached is None:
+            return None
+        expires_at, payload = cached
+        if expires_at <= now:
+            _WEATHER_CACHE.pop(cache_key, None)
+            return None
+        past, future = payload
+        return past.copy(), future.copy()
+
+
+def _set_cached_weather(cache_key: tuple, past: pd.DataFrame, future: pd.DataFrame):
+    expires_at = datetime.now() + timedelta(seconds=max(1, WEATHER_CACHE_TTL_SECONDS))
+    with _WEATHER_CACHE_LOCK:
+        _WEATHER_CACHE[cache_key] = (expires_at, (past.copy(), future.copy()))
 
 
 def fetch_weather(
@@ -104,6 +136,19 @@ def fetch_weather(
     past_hours: int,
     future_hours: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    cache_key = (
+        "provincial_dual",
+        round(float(lat), 4),
+        round(float(lon), 4),
+        tuple(feature_cols),
+        timezone,
+        past_hours,
+        future_hours,
+    )
+    cached = _get_cached_weather(cache_key)
+    if cached is not None:
+        return cached
+
     hourly_fields = ["temperature_2m", "relative_humidity_2m"]
     if DEWPOINT_COL in feature_cols:
         hourly_fields.append("dew_point_2m")
@@ -121,7 +166,7 @@ def fetch_weather(
     if "wind_speed_10m" in hourly_fields:
         params["wind_speed_unit"] = "kmh"
 
-    response = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=WEATHER_HTTP_TIMEOUT)
+    response = _HTTP_SESSION.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=WEATHER_HTTP_TIMEOUT)
     response.raise_for_status()
     hourly = response.json()["hourly"]
 
@@ -150,7 +195,10 @@ def fetch_weather(
     if len(past) != past_hours or len(future) != future_hours:
         raise ValueError(f"Unexpected weather window sizes. Got past={len(past)}, future={len(future)}")
 
-    return past.reset_index(drop=True), future.reset_index(drop=True)
+    past = past.reset_index(drop=True)
+    future = future.reset_index(drop=True)
+    _set_cached_weather(cache_key, past, future)
+    return past, future
 
 
 def forecast_next_24h_load(

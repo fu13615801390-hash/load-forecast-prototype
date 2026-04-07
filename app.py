@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 import math
 import os
 import re
@@ -15,6 +16,7 @@ import numpy as np
 import joblib
 import uuid
 import zipfile
+import copy
 from zoneinfo import ZoneInfo
 
 app = FastAPI(title="Load Forecast Interface")
@@ -86,6 +88,15 @@ WEATHER_HTTP_TIMEOUT = (
     float(os.getenv("WEATHER_HTTP_CONNECT_TIMEOUT_SECONDS", "15")),
     float(os.getenv("WEATHER_HTTP_READ_TIMEOUT_SECONDS", "180")),
 )
+WEATHER_CACHE_TTL_SECONDS = int(os.getenv("WEATHER_CACHE_TTL_SECONDS", "300"))
+
+_HTTP_SESSION = requests.Session()
+_WEATHER_CACHE: dict[tuple, tuple[datetime, dict | None]] = {}
+_WEATHER_CACHE_LOCK = Lock()
+_ACTUAL_HISTORY_CACHE: dict[str, tuple[float, pd.DataFrame | None]] = {}
+_ACTUAL_HISTORY_CACHE_LOCK = Lock()
+_RESIDENTIAL_BASELINE_CACHE: dict[str, tuple[float, pd.DataFrame | None]] = {}
+_RESIDENTIAL_BASELINE_CACHE_LOCK = Lock()
 
 
 # ----------------------------
@@ -136,6 +147,29 @@ def _openweather_api_key() -> str | None:
     return os.getenv("OPENWEATHER_API_KEY") or os.getenv("OPENWEATHER_APPID")
 
 
+def _cache_now() -> datetime:
+    return datetime.now()
+
+
+def _get_ttl_cache_value(cache: dict, key: tuple, ttl_seconds: int):
+    now = _cache_now()
+    with _WEATHER_CACHE_LOCK:
+        cached = cache.get(key)
+        if cached is None:
+            return None
+        expires_at, payload = cached
+        if expires_at <= now:
+            cache.pop(key, None)
+            return None
+        return copy.deepcopy(payload)
+
+
+def _set_ttl_cache_value(cache: dict, key: tuple, value, ttl_seconds: int):
+    expires_at = _cache_now() + timedelta(seconds=max(1, ttl_seconds))
+    with _WEATHER_CACHE_LOCK:
+        cache[key] = (expires_at, copy.deepcopy(value))
+
+
 def _fetch_openweather_current(lat: float, lon: float) -> dict | None:
     """
     Fetch current weather snapshot from OpenWeather.
@@ -146,15 +180,22 @@ def _fetch_openweather_current(lat: float, lon: float) -> dict | None:
         return None
 
     params = {"lat": lat, "lon": lon, "appid": api_key, "units": "metric"}
+    cache_key = ("ow_current", round(float(lat), 4), round(float(lon), 4))
+    cached = _get_ttl_cache_value(_WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
+
     try:
-        res = requests.get(OPENWEATHER_CURRENT_URL, params=params, timeout=WEATHER_HTTP_TIMEOUT)
+        res = _HTTP_SESSION.get(OPENWEATHER_CURRENT_URL, params=params, timeout=WEATHER_HTTP_TIMEOUT)
         res.raise_for_status()
         data = res.json()
-        return {
+        payload = {
             "timestamp_utc": _toronto_naive_from_unix_timestamp(int(data["dt"])),
             "temp_c": float(data["main"]["temp"]),
             "relative_humidity_pct": float(data["main"]["humidity"]),
         }
+        _set_ttl_cache_value(_WEATHER_CACHE, cache_key, payload, WEATHER_CACHE_TTL_SECONDS)
+        return payload
     except Exception:
         return None
 
@@ -168,8 +209,19 @@ def _fetch_openweather_forecast(lat: float, lon: float, start: datetime, horizon
         return None
 
     params = {"lat": lat, "lon": lon, "appid": api_key, "units": "metric"}
+    cache_key = (
+        "ow_forecast",
+        round(float(lat), 4),
+        round(float(lon), 4),
+        start.isoformat(timespec="hours"),
+        int(horizon_hours),
+    )
+    cached = _get_ttl_cache_value(_WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
+
     try:
-        res = requests.get(OPENWEATHER_FORECAST_URL, params=params, timeout=WEATHER_HTTP_TIMEOUT)
+        res = _HTTP_SESSION.get(OPENWEATHER_FORECAST_URL, params=params, timeout=WEATHER_HTTP_TIMEOUT)
         res.raise_for_status()
         data = res.json()
         items = data.get("list", [])
@@ -194,7 +246,7 @@ def _fetch_openweather_forecast(lat: float, lon: float, start: datetime, horizon
             temp.append(round(float(nearest[1]), 2))
             rh.append(round(float(nearest[2]), 2))
 
-        return {
+        payload = {
             "module": "weather_openweather_forecast",
             "location": "",
             "lat": lat,
@@ -203,6 +255,8 @@ def _fetch_openweather_forecast(lat: float, lon: float, start: datetime, horizon
             "temperature_C": temp,
             "relative_humidity_pct": rh,
         }
+        _set_ttl_cache_value(_WEATHER_CACHE, cache_key, payload, WEATHER_CACHE_TTL_SECONDS)
+        return payload
     except Exception:
         return None
 
@@ -577,6 +631,116 @@ def _find_first_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+def _load_actual_history_df(csv_path: str) -> pd.DataFrame | None:
+    try:
+        mtime = os.path.getmtime(csv_path)
+    except OSError:
+        return None
+
+    with _ACTUAL_HISTORY_CACHE_LOCK:
+        cached = _ACTUAL_HISTORY_CACHE.get(csv_path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1].copy() if cached[1] is not None else None
+
+    try:
+        raw_df = pd.read_csv(csv_path)
+    except Exception:
+        parsed = None
+    else:
+        ts_col = _find_first_col(raw_df, ["timestamp", "datetime", "dt", "time"])
+        load_col = _find_first_col(raw_df, ["load", "actual_load", "demand", "kwh", "kw"])
+        if ts_col is None or load_col is None:
+            parsed = None
+        else:
+            parsed = raw_df.copy()
+            parsed[ts_col] = pd.to_datetime(parsed[ts_col], errors="coerce")
+            parsed[load_col] = pd.to_numeric(parsed[load_col], errors="coerce")
+            parsed = parsed.dropna(subset=[ts_col, load_col]).copy()
+            if parsed.empty:
+                parsed = None
+            else:
+                parsed["ts"] = parsed[ts_col]
+                parsed["load"] = parsed[load_col]
+                sector_col = _find_first_col(parsed, ["sector", "model"])
+                if sector_col is not None:
+                    parsed["sector"] = parsed[sector_col].astype(str).str.lower()
+                location_col = _find_first_col(parsed, ["location_key", "location"])
+                if location_col is not None:
+                    parsed["location_key"] = parsed[location_col].astype(str).str.lower()
+                parsed["hour"] = parsed["ts"].dt.hour
+                parsed["dow"] = parsed["ts"].dt.dayofweek
+                keep_cols = ["ts", "load", "hour", "dow"]
+                if "sector" in parsed.columns:
+                    keep_cols.append("sector")
+                if "location_key" in parsed.columns:
+                    keep_cols.append("location_key")
+                parsed = parsed[keep_cols].reset_index(drop=True)
+
+    with _ACTUAL_HISTORY_CACHE_LOCK:
+        _ACTUAL_HISTORY_CACHE[csv_path] = (mtime, parsed.copy() if parsed is not None else None)
+    return parsed.copy() if parsed is not None else None
+
+
+def _load_residential_baseline_df(csv_path: str) -> pd.DataFrame | None:
+    try:
+        mtime = os.path.getmtime(csv_path)
+    except OSError:
+        return None
+
+    with _RESIDENTIAL_BASELINE_CACHE_LOCK:
+        cached = _RESIDENTIAL_BASELINE_CACHE.get(csv_path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1].copy() if cached[1] is not None else None
+
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        parsed = None
+    else:
+        date_col = _find_first_col(df, ["Date", "date"])
+        hour_col = _find_first_col(df, ["Hour", "hour", "hour_ending", "he"])
+        load_col = _find_first_col(
+            df,
+            [
+                "Total Consumption (kWh)",
+                "total_consumption_kwh",
+                "consumption_kwh",
+                "load",
+                "demand",
+                "kwh",
+                "kw",
+            ],
+        )
+        if date_col is None or hour_col is None or load_col is None:
+            parsed = None
+        else:
+            temp = df.copy()
+            type_col = _find_first_col(temp, ["Type", "type", "Sector", "sector"])
+            if type_col is not None:
+                temp = temp[temp[type_col].astype(str).str.lower() == "residential"]
+            if temp.empty:
+                parsed = None
+            else:
+                temp[hour_col] = pd.to_numeric(temp[hour_col], errors="coerce")
+                temp[load_col] = pd.to_numeric(temp[load_col], errors="coerce")
+                temp["dt"] = pd.to_datetime(
+                    temp[date_col].astype(str) + " " + (temp[hour_col].astype("Int64") - 1).astype(str) + ":00",
+                    errors="coerce",
+                )
+                temp = temp.dropna(subset=["dt", load_col]).copy()
+                if temp.empty:
+                    parsed = None
+                else:
+                    temp["load"] = temp[load_col]
+                    temp["hour"] = temp["dt"].dt.hour
+                    temp["dow"] = temp["dt"].dt.dayofweek
+                    parsed = temp[["dt", "load", "hour", "dow"]].reset_index(drop=True)
+
+    with _RESIDENTIAL_BASELINE_CACHE_LOCK:
+        _RESIDENTIAL_BASELINE_CACHE[csv_path] = (mtime, parsed.copy() if parsed is not None else None)
+    return parsed.copy() if parsed is not None else None
+
+
 def _historical_baseline_from_actual_csv(
     location_key: str, sector: str, target_timestamps: list[str]
 ) -> list[float] | None:
@@ -592,39 +756,21 @@ def _historical_baseline_from_actual_csv(
     if not os.path.isfile(HISTORICAL_LOAD_CSV):
         return None
 
-    try:
-        df = pd.read_csv(HISTORICAL_LOAD_CSV)
-    except Exception:
+    df = _load_actual_history_df(HISTORICAL_LOAD_CSV)
+    if df is None:
         return None
-
-    ts_col = _find_first_col(df, ["timestamp", "datetime", "dt", "time"])
-    load_col = _find_first_col(df, ["load", "actual_load", "demand", "kwh", "kw"])
-    if ts_col is None or load_col is None:
-        return None
-
     df = df.copy()
-    df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce")
-    df[load_col] = pd.to_numeric(df[load_col], errors="coerce")
-    df = df.dropna(subset=[ts_col, load_col])
-    if df.empty:
-        return None
 
-    sector_col = _find_first_col(df, ["sector", "model"])
-    if sector_col is not None:
-        df = df[df[sector_col].astype(str).str.lower() == str(sector).lower()]
+    if "sector" in df.columns:
+        df = df[df["sector"].astype(str).str.lower() == str(sector).lower()]
         if df.empty:
             return None
 
-    location_col = _find_first_col(df, ["location_key", "location"])
-    if location_col is not None:
-        # Match both key and common label text where available.
+    if "location_key" in df.columns:
         lk = str(location_key).lower()
-        df_loc = df[df[location_col].astype(str).str.lower() == lk]
+        df_loc = df[df["location_key"].astype(str).str.lower() == lk]
         if not df_loc.empty:
             df = df_loc
-
-    df["hour"] = df[ts_col].dt.hour
-    df["dow"] = df[ts_col].dt.dayofweek
 
     baseline: list[float] = []
     for ts in target_timestamps:
@@ -641,7 +787,7 @@ def _historical_baseline_from_actual_csv(
         if subset.empty:
             baseline.append(float("nan"))
         else:
-            baseline.append(float(subset[load_col].mean()))
+            baseline.append(float(subset["load"].mean()))
 
     if all(pd.isna(v) for v in baseline):
         return None
@@ -678,51 +824,12 @@ def _historical_baseline_from_residential_csv(target_timestamps: list[str]) -> l
         LAST_RESIDENTIAL_BASELINE_PATH = None
         return None
 
-    try:
-        df = pd.read_csv(csv_path)
-    except Exception:
-        LAST_RESIDENTIAL_BASELINE_PATH = csv_path
+    temp = _load_residential_baseline_df(csv_path)
+    LAST_RESIDENTIAL_BASELINE_PATH = csv_path
+    if temp is None:
         return None
-
-    date_col = _find_first_col(df, ["Date", "date"])
-    hour_col = _find_first_col(df, ["Hour", "hour", "hour_ending", "he"])
-    load_col = _find_first_col(
-        df,
-        [
-            "Total Consumption (kWh)",
-            "total_consumption_kwh",
-            "consumption_kwh",
-            "load",
-            "demand",
-            "kwh",
-            "kw",
-        ],
-    )
-    if date_col is None or hour_col is None or load_col is None:
-        LAST_RESIDENTIAL_BASELINE_PATH = csv_path
-        return None
-
-    temp = df.copy()
-    type_col = _find_first_col(temp, ["Type", "type", "Sector", "sector"])
-    if type_col is not None:
-        temp = temp[temp[type_col].astype(str).str.lower() == "residential"]
-        if temp.empty:
-            LAST_RESIDENTIAL_BASELINE_PATH = csv_path
-            return None
-
-    temp[hour_col] = pd.to_numeric(temp[hour_col], errors="coerce")
-    temp[load_col] = pd.to_numeric(temp[load_col], errors="coerce")
-    temp["dt"] = pd.to_datetime(
-        temp[date_col].astype(str) + " " + (temp[hour_col].astype("Int64") - 1).astype(str) + ":00",
-        errors="coerce",
-    )
-    temp = temp.dropna(subset=["dt", load_col])
     if temp.empty:
-        LAST_RESIDENTIAL_BASELINE_PATH = csv_path
         return None
-
-    temp["hour"] = temp["dt"].dt.hour
-    temp["dow"] = temp["dt"].dt.dayofweek
 
     baseline: list[float] = []
     for ts in target_timestamps:
@@ -739,12 +846,10 @@ def _historical_baseline_from_residential_csv(target_timestamps: list[str]) -> l
         if subset.empty:
             baseline.append(float("nan"))
         else:
-            baseline.append(float(subset[load_col].mean()))
+            baseline.append(float(subset["load"].mean()))
 
     if all(pd.isna(v) for v in baseline):
-        LAST_RESIDENTIAL_BASELINE_PATH = csv_path
         return None
-    LAST_RESIDENTIAL_BASELINE_PATH = csv_path
     return [round(float(v), 2) if not pd.isna(v) else None for v in baseline]  # type: ignore[list-item]
 
 

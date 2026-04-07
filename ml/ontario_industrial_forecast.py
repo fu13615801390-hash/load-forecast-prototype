@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from threading import Lock
+from datetime import datetime, timedelta
 
 import joblib
 import numpy as np
@@ -22,6 +24,11 @@ _FEATURE_SCALER = None
 _TARGET_SCALER = None
 _CONFIG = None
 _LOAD_MODEL = None
+_ARTIFACT_LOCK = Lock()
+_WEATHER_CACHE: dict[tuple, tuple[datetime, tuple[pd.DataFrame, pd.DataFrame]]] = {}
+_WEATHER_CACHE_LOCK = Lock()
+_HTTP_SESSION = requests.Session()
+WEATHER_CACHE_TTL_SECONDS = int(os.getenv("MODEL_WEATHER_CACHE_TTL_SECONDS", "300"))
 
 
 def build_time_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -71,33 +78,57 @@ def _load_artifacts(model_dir: str | os.PathLike[str]):
     if _MODEL is not None and _FEATURE_SCALER is not None and _TARGET_SCALER is not None and _CONFIG is not None:
         return _MODEL, _FEATURE_SCALER, _TARGET_SCALER, _CONFIG
 
-    model_dir = Path(model_dir)
-    model_candidates = [
-        model_dir / "ontario_industrial_cnn.keras",
-        model_dir / "best_model.keras",
-    ]
-    model_path = next((p for p in model_candidates if p.is_file()), model_candidates[0])
-    feature_scaler_path = model_dir / "feature_scaler.pkl"
-    target_scaler_path = model_dir / "target_scaler.pkl"
-    config_path = model_dir / "config.json"
+    with _ARTIFACT_LOCK:
+        if _MODEL is not None and _FEATURE_SCALER is not None and _TARGET_SCALER is not None and _CONFIG is not None:
+            return _MODEL, _FEATURE_SCALER, _TARGET_SCALER, _CONFIG
 
-    missing = [str(p) for p in (model_path, feature_scaler_path, target_scaler_path, config_path) if not p.is_file()]
-    if missing:
-        raise FileNotFoundError(f"Missing Ontario industrial model artifacts: {missing}")
+        model_dir = Path(model_dir)
+        model_candidates = [
+            model_dir / "ontario_industrial_cnn.keras",
+            model_dir / "best_model.keras",
+        ]
+        model_path = next((p for p in model_candidates if p.is_file()), model_candidates[0])
+        feature_scaler_path = model_dir / "feature_scaler.pkl"
+        target_scaler_path = model_dir / "target_scaler.pkl"
+        config_path = model_dir / "config.json"
 
-    with config_path.open("r", encoding="utf-8") as f:
-        config = json.load(f)
+        missing = [str(p) for p in (model_path, feature_scaler_path, target_scaler_path, config_path) if not p.is_file()]
+        if missing:
+            raise FileNotFoundError(f"Missing Ontario industrial model artifacts: {missing}")
 
-    model_loader = _resolve_model_loader()
-    model = model_loader(model_path)
-    feature_scaler = joblib.load(feature_scaler_path)
-    target_scaler = joblib.load(target_scaler_path)
+        with config_path.open("r", encoding="utf-8") as f:
+            config = json.load(f)
 
-    _MODEL = model
-    _FEATURE_SCALER = feature_scaler
-    _TARGET_SCALER = target_scaler
-    _CONFIG = config
+        model_loader = _resolve_model_loader()
+        model = model_loader(model_path)
+        feature_scaler = joblib.load(feature_scaler_path)
+        target_scaler = joblib.load(target_scaler_path)
+
+        _MODEL = model
+        _FEATURE_SCALER = feature_scaler
+        _TARGET_SCALER = target_scaler
+        _CONFIG = config
     return _MODEL, _FEATURE_SCALER, _TARGET_SCALER, _CONFIG
+
+
+def _get_cached_weather(cache_key: tuple):
+    now = datetime.now()
+    with _WEATHER_CACHE_LOCK:
+        cached = _WEATHER_CACHE.get(cache_key)
+        if cached is None:
+            return None
+        expires_at, payload = cached
+        if expires_at <= now:
+            _WEATHER_CACHE.pop(cache_key, None)
+            return None
+        past, future = payload
+        return past.copy(), future.copy()
+
+
+def _set_cached_weather(cache_key: tuple, past: pd.DataFrame, future: pd.DataFrame):
+    expires_at = datetime.now() + timedelta(seconds=max(1, WEATHER_CACHE_TTL_SECONDS))
+    with _WEATHER_CACHE_LOCK:
+        _WEATHER_CACHE[cache_key] = (expires_at, (past.copy(), future.copy()))
 
 
 def fetch_weather(
@@ -107,6 +138,11 @@ def fetch_weather(
     past_hours: int = 72,
     future_hours: int = 24,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    cache_key = ("ontario_ind", round(float(lat), 4), round(float(lon), 4), timezone, past_hours, future_hours)
+    cached = _get_cached_weather(cache_key)
+    if cached is not None:
+        return cached
+
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
@@ -118,7 +154,7 @@ def fetch_weather(
         "wind_speed_unit": "kmh",
     }
 
-    response = requests.get(url, params=params, timeout=WEATHER_HTTP_TIMEOUT)
+    response = _HTTP_SESSION.get(url, params=params, timeout=WEATHER_HTTP_TIMEOUT)
     response.raise_for_status()
     hourly = response.json()["hourly"]
 
@@ -144,7 +180,10 @@ def fetch_weather(
     if len(past) != past_hours or len(future) != future_hours:
         raise ValueError(f"Unexpected weather window sizes. Got past={len(past)}, future={len(future)}")
 
-    return past.reset_index(drop=True), future.reset_index(drop=True)
+    past = past.reset_index(drop=True)
+    future = future.reset_index(drop=True)
+    _set_cached_weather(cache_key, past, future)
+    return past, future
 
 
 def forecast_next_24h_load(
