@@ -1238,7 +1238,7 @@ def _predict_commercial_24h(location_key: str) -> dict:
     return {
         "module": module_name,
         "sector": "com",
-        "unit": "MWh",
+        "unit": "MW",
         "timestamps": ts,
         "predicted_load": yhat,
         "location": label,
@@ -1352,7 +1352,7 @@ def _predict_provincial_industrial_24h(location_key: str) -> dict:
     return {
         "module": module_name,
         "sector": "ind",
-        "unit": "MWh",
+        "unit": "MW",
         "timestamps": ts,
         "predicted_load": yhat,
         "location": label,
