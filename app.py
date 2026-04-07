@@ -1256,7 +1256,7 @@ def _predict_alberta_24h(location_key: str, start: datetime) -> dict:
 
     return {
         "module": "forecast_alberta_ml",
-        "sector": "ind",
+        "sector": "res",
         "unit": "MW",
         "timestamps": ts,
         "predicted_load": yhat,
@@ -1264,6 +1264,9 @@ def _predict_alberta_24h(location_key: str, start: datetime) -> dict:
         "lat": lat,
         "lon": lon,
         "model_source": "alberta_provincial_lstm",
+        "historical_baseline": None,
+        "baseline_source": "none",
+        "baseline_source_path": None,
     }
 
 
@@ -1277,7 +1280,7 @@ def _predict_bc_24h(location_key: str, start: datetime) -> dict:
 
     return {
         "module": "forecast_bc_ml",
-        "sector": "ind",
+        "sector": "res",
         "unit": "MW",
         "timestamps": ts,
         "predicted_load": yhat,
@@ -1285,6 +1288,9 @@ def _predict_bc_24h(location_key: str, start: datetime) -> dict:
         "lat": lat,
         "lon": lon,
         "model_source": "bc_provincial_lstm",
+        "historical_baseline": None,
+        "baseline_source": "none",
+        "baseline_source_path": None,
     }
 
 
@@ -1605,32 +1611,41 @@ def api_forecast_res(req: ModelRequest):
 
     horizon = 24
 
-    # Prefer trained user model if available; fallback to original LSTM path.
-    model_source = "user_trained_rf"
-    try:
-        yhat = _predict_residential_with_user_model(start, horizon, label, lat, lon)
-    except Exception:
-        window_rows = build_past_168_window(label, lat, lon, start)
-        yhat = _expand_to_horizon(_ml_predict_residential_24h(window_rows), horizon)
-        model_source = "default_res_lstm"
+    if req.location_key == "alberta":
+        out = _predict_alberta_24h(req.location_key, start)
+        out["input_source"] = "live_api_or_fallback_weather"
+    elif req.location_key == "vancouver":
+        out = _predict_bc_24h(req.location_key, start)
+        out["input_source"] = "live_api_or_fallback_weather"
+    else:
+        # Toronto uses the trained Toronto/user residential path.
+        model_source = "user_trained_rf"
+        try:
+            yhat = _predict_residential_with_user_model(start, horizon, label, lat, lon)
+        except Exception:
+            window_rows = build_past_168_window(label, lat, lon, start)
+            yhat = _expand_to_horizon(_ml_predict_residential_24h(window_rows), horizon)
+            model_source = "default_res_lstm"
 
-    ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(horizon)]
+        ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(horizon)]
+        out = {
+            "module": "forecast_res_ml",
+            "sector": "res",
+            "unit": "kWh",
+            "timestamps": ts,
+            "predicted_load": [round(float(v), 2) for v in yhat],
+            "location": label,
+            "lat": lat,
+            "lon": lon,
+            "historical_baseline": _historical_baseline_from_residential_csv(ts),
+            "baseline_source": "residential_csv",
+            "baseline_source_path": LAST_RESIDENTIAL_BASELINE_PATH,
+            "model_source": model_source,
+            "input_source": "live_api_or_fallback_weather",
+        }
 
-    out = {
-        "module": "forecast_res_ml",
-        "sector": "res",
-        "unit": "kWh",
-        "timestamps": ts,
-        "predicted_load": [round(float(v), 2) for v in yhat],
-        "location": label,
-        "lat": lat,
-        "lon": lon,
-        "historical_baseline": _historical_baseline_from_residential_csv(ts),
-        "baseline_source": "residential_csv",
-        "baseline_source_path": LAST_RESIDENTIAL_BASELINE_PATH,
-        "model_source": model_source,
-        "input_source": "live_api_or_fallback_weather",
-    }
+    ts = out["timestamps"]
+
     if out["historical_baseline"] is None:
         out["historical_baseline"] = _historical_baseline_from_actual_csv(req.location_key, "res", ts)
         out["baseline_source"] = "actual_history_csv"
@@ -1775,26 +1790,32 @@ def api_run_all(req: AllRequest):
     # ---- Residential ----
     horizon = 24
     res_label, res_lat, res_lon = resolve_preset(req.res_location_key)
-    res_model_source = "user_trained_rf"
-    try:
-        res_yhat = _predict_residential_with_user_model(start, horizon, res_label, res_lat, res_lon)
-    except Exception:
-        res_window = build_past_168_window(res_label, res_lat, res_lon, start)
-        res_yhat = _expand_to_horizon(_ml_predict_residential_24h(res_window), horizon)
-        res_model_source = "default_res_lstm"
-    res_ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(horizon)]
+    if req.res_location_key == "alberta":
+        res_out = _predict_alberta_24h(req.res_location_key, start)
+    elif req.res_location_key == "vancouver":
+        res_out = _predict_bc_24h(req.res_location_key, start)
+    else:
+        res_model_source = "user_trained_rf"
+        try:
+            res_yhat = _predict_residential_with_user_model(start, horizon, res_label, res_lat, res_lon)
+        except Exception:
+            res_window = build_past_168_window(res_label, res_lat, res_lon, start)
+            res_yhat = _expand_to_horizon(_ml_predict_residential_24h(res_window), horizon)
+            res_model_source = "default_res_lstm"
+        res_ts = [(start + timedelta(hours=i + 1)).isoformat(timespec="minutes") for i in range(horizon)]
 
-    res_out = {
-        "module": "forecast_res_ml",
-        "sector": "res",
-        "unit": "kWh",
-        "timestamps": res_ts,
-        "predicted_load": [round(float(v), 2) for v in res_yhat],
-        "historical_baseline": _historical_baseline_from_residential_csv(res_ts),
-        "baseline_source": "residential_csv",
-        "baseline_source_path": LAST_RESIDENTIAL_BASELINE_PATH,
-        "model_source": res_model_source,
-    }
+        res_out = {
+            "module": "forecast_res_ml",
+            "sector": "res",
+            "unit": "kWh",
+            "timestamps": res_ts,
+            "predicted_load": [round(float(v), 2) for v in res_yhat],
+            "historical_baseline": _historical_baseline_from_residential_csv(res_ts),
+            "baseline_source": "residential_csv",
+            "baseline_source_path": LAST_RESIDENTIAL_BASELINE_PATH,
+            "model_source": res_model_source,
+        }
+    res_ts = res_out["timestamps"]
     if res_out["historical_baseline"] is None:
         res_out["historical_baseline"] = _historical_baseline_from_actual_csv(req.res_location_key, "res", res_ts)
         res_out["baseline_source"] = "actual_history_csv"
