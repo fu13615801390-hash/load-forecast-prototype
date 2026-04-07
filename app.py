@@ -2108,3 +2108,16 @@ def api_train_download_artifacts():
         media_type="application/zip",
         filename="user_res_training_artifacts.zip",
     )
+
+
+@app.get("/api/train/download_template")
+def api_train_download_template():
+    template_path = os.path.join("data", "training_template.csv")
+    if not os.path.isfile(template_path):
+        raise HTTPException(status_code=404, detail=f"Missing training template file: {template_path}")
+
+    return FileResponse(
+        template_path,
+        media_type="text/csv",
+        filename="training_template.csv",
+    )

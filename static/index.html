@@ -324,6 +324,9 @@ MASE: 1.16
             <button onclick="trainModel()">Train Model</button>
             <button class="secondary" onclick="downloadTrainedArtifacts()">Download Model Files</button>
           </div>
+          <div class="row2">
+            <button class="secondary" onclick="downloadTrainingTemplate()">Download CSV Template</button>
+          </div>
           <div id="trainMetricsBox" class="metricsBox hidden"></div>
           <div class="hint">We will build one combined training CSV with: datetime, TOTAL_CONSUMPTION (kWh), Temp (C), Rel Hum (%), Dew Point Temp (C).</div>
         </div>
@@ -944,6 +947,10 @@ MASE: 0.77`
   // --------------------
   function downloadTrainedArtifacts(){
     window.location.href = "/api/train/download_artifacts";
+  }
+
+  function downloadTrainingTemplate(){
+    window.location.href = "/api/train/download_template";
   }
 
   function downloadCSV(){
