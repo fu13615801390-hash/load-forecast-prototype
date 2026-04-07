@@ -44,8 +44,8 @@ ALBERTA_COMMERCIAL_MODEL_DIR = os.path.join("models", "alberta_commercial")
 ALBERTA_INDUSTRIAL_MODEL_DIR = os.path.join("models", "alberta_industrial")
 BC_COMMERCIAL_MODEL_DIR = os.path.join("models", "bc_commercial")
 BC_INDUSTRIAL_MODEL_DIR = os.path.join("models", "bc_industrial")
-DISPLAY_ENERGY_UNIT = "MWh"
-KWH_TO_MWH = 1.0 / 1000.0
+DISPLAY_ENERGY_UNIT = "MW"
+KWH_TO_MW = 1.0 / 1000.0
 KW_TO_MW = 1.0 / 1000.0
 APP_TIMEZONE = ZoneInfo("America/Toronto")
 USER_TRAINED_SECTOR_DIRS = {
@@ -1088,7 +1088,7 @@ def _expand_to_horizon(values: list[float], horizon: int) -> list[float]:
     return out[:horizon]
 
 
-def _convert_kwh_list_to_mwh(values: list[float] | None) -> list[float] | None:
+def _convert_kwh_list_to_mw(values: list[float] | None) -> list[float] | None:
     if values is None:
         return None
     out: list[float] = []
@@ -1096,7 +1096,7 @@ def _convert_kwh_list_to_mwh(values: list[float] | None) -> list[float] | None:
         if value is None:
             out.append(None)  # type: ignore[arg-type]
         else:
-            out.append(round(float(value) * KWH_TO_MWH, 4))
+            out.append(round(float(value) * KWH_TO_MW, 4))
     return out
 
 
@@ -1115,12 +1115,14 @@ def _convert_kw_list_to_mw(values: list[float] | None) -> list[float] | None:
 def _normalize_display_unit(payload: dict) -> dict:
     unit = str(payload.get("unit") or "").strip()
     if unit == "kWh":
-        payload["predicted_load"] = _convert_kwh_list_to_mwh(payload.get("predicted_load"))
-        payload["historical_baseline"] = _convert_kwh_list_to_mwh(payload.get("historical_baseline"))
-        payload["unit"] = "MWh"
+        payload["predicted_load"] = _convert_kwh_list_to_mw(payload.get("predicted_load"))
+        payload["historical_baseline"] = _convert_kwh_list_to_mw(payload.get("historical_baseline"))
+        payload["unit"] = "MW"
     elif unit == "kW":
         payload["predicted_load"] = _convert_kw_list_to_mw(payload.get("predicted_load"))
         payload["historical_baseline"] = _convert_kw_list_to_mw(payload.get("historical_baseline"))
+        payload["unit"] = "MW"
+    elif unit == "MWh":
         payload["unit"] = "MW"
     return payload
 
